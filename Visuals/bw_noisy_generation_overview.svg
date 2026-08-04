@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980">
+  <rect width="1600" height="980" fill="#0f172a"/>
+  <text x="80" y="90" fill="#f8fafc" font-size="42" font-family="Segoe UI, Arial, sans-serif" font-weight="700">
+    BW Noisy Wafer Generator Overview
+  </text>
+  <text x="80" y="132" fill="#94a3b8" font-size="24" font-family="Segoe UI, Arial, sans-serif">
+    Target file: paste_ready_generate_bw_noisy_wafer.py
+  </text>
+
+  <rect x="80" y="190" width="300" height="180" rx="24" fill="#1d4ed8"/>
+  <text x="110" y="248" fill="#eff6ff" font-size="28" font-family="Segoe UI, Arial, sans-serif" font-weight="700">1. Source Die</text>
+  <text x="110" y="292" fill="#dbeafe" font-size="22" font-family="Segoe UI, Arial, sans-serif">Top-view die image input</text>
+  <text x="110" y="326" fill="#dbeafe" font-size="22" font-family="Segoe UI, Arial, sans-serif">Center crop scale: 0.90</text>
+
+  <rect x="460" y="190" width="300" height="180" rx="24" fill="#0f766e"/>
+  <text x="490" y="248" fill="#ecfeff" font-size="28" font-family="Segoe UI, Arial, sans-serif" font-weight="700">2. Texture Prep</text>
+  <text x="490" y="292" fill="#ccfbf1" font-size="22" font-family="Segoe UI, Arial, sans-serif">Gray convert</text>
+  <text x="490" y="326" fill="#ccfbf1" font-size="22" font-family="Segoe UI, Arial, sans-serif">Resize 256x256 + equalize + blur</text>
+
+  <rect x="840" y="190" width="300" height="180" rx="24" fill="#7c3aed"/>
+  <text x="870" y="248" fill="#f5f3ff" font-size="28" font-family="Segoe UI, Arial, sans-serif" font-weight="700">3. Dense Placement</text>
+  <text x="870" y="292" fill="#ede9fe" font-size="22" font-family="Segoe UI, Arial, sans-serif">Canvas: 3000x3000</text>
+  <text x="870" y="326" fill="#ede9fe" font-size="22" font-family="Segoe UI, Arial, sans-serif">Pitch: 90, gap: 1px, edge cut</text>
+
+  <rect x="1220" y="190" width="300" height="180" rx="24" fill="#be123c"/>
+  <text x="1250" y="248" fill="#fff1f2" font-size="28" font-family="Segoe UI, Arial, sans-serif" font-weight="700">4. Heavy Noise</text>
+  <text x="1250" y="292" fill="#ffe4e6" font-size="22" font-family="Segoe UI, Arial, sans-serif">Gaussian wobble</text>
+  <text x="1250" y="326" fill="#ffe4e6" font-size="22" font-family="Segoe UI, Arial, sans-serif">Salt-pepper + scratches + blobs</text>
+
+  <rect x="280" y="500" width="1040" height="280" rx="28" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <text x="330" y="570" fill="#f8fafc" font-size="30" font-family="Segoe UI, Arial, sans-serif" font-weight="700">Generated Result Characteristics</text>
+  <text x="330" y="626" fill="#cbd5e1" font-size="24" font-family="Segoe UI, Arial, sans-serif">- Flat 2D top view only</text>
+  <text x="330" y="666" fill="#cbd5e1" font-size="24" font-family="Segoe UI, Arial, sans-serif">- Die are packed tightly with near-zero spacing</text>
+  <text x="330" y="706" fill="#cbd5e1" font-size="24" font-family="Segoe UI, Arial, sans-serif">- Partial edge die are excluded from the wafer rim</text>
+  <text x="330" y="746" fill="#cbd5e1" font-size="24" font-family="Segoe UI, Arial, sans-serif">- Rotation applied after outline: -1.10 deg</text>
+
+  <line x1="380" y1="280" x2="460" y2="280" stroke="#94a3b8" stroke-width="8" stroke-linecap="round"/>
+  <line x1="760" y1="280" x2="840" y2="280" stroke="#94a3b8" stroke-width="8" stroke-linecap="round"/>
+  <line x1="1140" y1="280" x2="1220" y2="280" stroke="#94a3b8" stroke-width="8" stroke-linecap="round"/>
+  <line x1="1370" y1="370" x2="1370" y2="430" stroke="#94a3b8" stroke-width="8" stroke-linecap="round"/>
+  <line x1="1370" y1="430" x2="800" y2="430" stroke="#94a3b8" stroke-width="8" stroke-linecap="round"/>
+  <line x1="800" y1="430" x2="800" y2="500" stroke="#94a3b8" stroke-width="8" stroke-linecap="round"/>
+
+  <circle cx="800" cy="860" r="20" fill="#22c55e"/>
+  <text x="840" y="870" fill="#bbf7d0" font-size="24" font-family="Segoe UI, Arial, sans-serif">Output: grayscale wafer PNG ready for detector stress test</text>
+</svg>

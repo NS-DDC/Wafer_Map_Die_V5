@@ -1,0 +1,1003 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wafer Die Map V5 — 로직 설명서</title>
+<style>
+  :root {
+    --bg:        #0f1117;
+    --bg2:       #1a1d27;
+    --bg3:       #22263a;
+    --border:    #2e3350;
+    --text:      #e2e8f0;
+    --text-muted:#8892a4;
+    --accent-a:  #4f8ef7;  /* die_render — blue */
+    --accent-b:  #f7c94f;  /* edge — gold */
+    --accent-c:  #4fcca8;  /* aligned image — teal */
+    --accent-d:  #f76f6f;  /* warning / old */
+    --green:     #56d48e;
+    --purple:    #b57bee;
+    --font:      'Segoe UI', 'Noto Sans KR', sans-serif;
+    --mono:      'Consolas', 'D2Coding', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 15px;
+    line-height: 1.7;
+    padding: 0 0 80px 0;
+  }
+
+  /* ── HERO ── */
+  .hero {
+    background: linear-gradient(135deg, #0f1117 0%, #1a2340 60%, #0f1117 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 56px 40px 40px;
+    text-align: center;
+  }
+  .hero h1 { font-size: 2.2rem; font-weight: 700; letter-spacing: -0.5px; }
+  .hero h1 span { color: var(--accent-a); }
+  .hero .sub { margin-top: 10px; color: var(--text-muted); font-size: 1rem; }
+
+  /* ── LAYOUT ── */
+  .container { max-width: 920px; margin: 0 auto; padding: 0 24px; }
+  section { margin-top: 60px; }
+  h2 {
+    font-size: 1.45rem;
+    font-weight: 700;
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--border);
+  }
+  h2 .sec-num {
+    display: inline-block;
+    background: var(--accent-a);
+    color: #fff;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    padding: 2px 7px;
+    margin-right: 8px;
+    vertical-align: middle;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+  }
+  h3 { font-size: 1.1rem; font-weight: 600; margin: 24px 0 10px; color: #c5cde0; }
+
+  /* ── CARD ── */
+  .card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 22px 24px;
+    margin-bottom: 20px;
+  }
+  .card-a { border-left: 4px solid var(--accent-a); }
+  .card-b { border-left: 4px solid var(--accent-b); }
+  .card-c { border-left: 4px solid var(--accent-c); }
+  .card-d { border-left: 4px solid var(--accent-d); }
+  .card-purple { border-left: 4px solid var(--purple); }
+
+  /* ── WHY CALLOUT ── */
+  .why {
+    background: #1b2035;
+    border: 1px solid #2e4080;
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin: 18px 0;
+  }
+  .why::before {
+    content: "💡 왜(WHY)?";
+    display: block;
+    font-weight: 700;
+    color: var(--accent-a);
+    margin-bottom: 6px;
+    font-size: 0.85rem;
+    letter-spacing: 0.5px;
+  }
+
+  /* ── KPI CHIPS ── */
+  .kpi-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0; }
+  .kpi {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 18px;
+    text-align: center;
+    min-width: 140px;
+  }
+  .kpi .val { font-size: 1.8rem; font-weight: 700; }
+  .kpi .val.green { color: var(--green); }
+  .kpi .val.gold  { color: var(--accent-b); }
+  .kpi .val.blue  { color: var(--accent-a); }
+  .kpi .lbl { font-size: 0.78rem; color: var(--text-muted); margin-top: 4px; }
+
+  /* ── TABLE ── */
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 0.9rem; }
+  th { background: var(--bg3); color: var(--text-muted); font-weight: 600;
+       padding: 9px 14px; text-align: left; border: 1px solid var(--border); }
+  td { padding: 9px 14px; border: 1px solid var(--border); }
+  tr:nth-child(even) td { background: #191c2a; }
+  td.good { color: var(--green); font-weight: 600; }
+  td.warn { color: var(--accent-d); }
+
+  /* ── CODE ── */
+  pre {
+    background: #0b0e18;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 0.87rem;
+    line-height: 1.6;
+    margin: 16px 0;
+  }
+  code { font-family: var(--mono); background: var(--bg3);
+         padding: 1px 6px; border-radius: 3px; font-size: 0.87em; }
+
+  /* ── SVG DIAGRAMS ── */
+  .diagram-wrap {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin: 20px 0;
+    text-align: center;
+  }
+  .diagram-wrap figcaption {
+    margin-top: 12px;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+  }
+
+  /* ── FLOW STEPS ── */
+  .flow { display: flex; flex-direction: column; gap: 0; margin: 20px 0; }
+  .flow-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    padding: 14px 18px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-bottom: none;
+  }
+  .flow-step:first-child { border-radius: 8px 8px 0 0; }
+  .flow-step:last-child  { border-bottom: 1px solid var(--border); border-radius: 0 0 8px 8px; }
+  .flow-step .num {
+    background: var(--accent-a);
+    color: #fff;
+    border-radius: 50%;
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    font-weight: 700;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .flow-step .content {}
+  .flow-step .title { font-weight: 600; margin-bottom: 4px; }
+  .flow-step .desc  { font-size: 0.88rem; color: var(--text-muted); }
+
+  /* ── IMG SECTION ── */
+  .overview-img {
+    width: 100%;
+    max-width: 780px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    display: block;
+    margin: 0 auto;
+  }
+
+  /* ── FOOTER ── */
+  footer {
+    margin-top: 80px;
+    border-top: 1px solid var(--border);
+    padding: 24px 0 0;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+  }
+  footer a { color: var(--accent-a); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="container">
+    <h1>Wafer Die Map <span>V5</span> — 로직 설명서</h1>
+    <p class="sub">왜 이렇게 설계했는가 · numpy + opencv-python · Python 3.9</p>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- ═══════════════════════════════════════════════
+       SECTION 0: V5 한눈에 보기
+  ════════════════════════════════════════════════ -->
+  <section>
+    <h2><span class="sec-num">V5</span>세 가지 핵심 변경 사항</h2>
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); gap:16px; margin-top:4px;">
+      <div class="card card-a">
+        <div style="font-size:1.5rem; margin-bottom:6px;">🎯</div>
+        <strong style="color:var(--accent-a)">(A) 새 기본 각도 정렬</strong>
+        <p style="margin-top:8px; font-size:0.9rem;">다이 격자 렌더링 기반 <code>die_render</code> 방식이 기본값.<br>전체 격자를 활용해 오차 <strong>≤ 0.003°</strong></p>
+      </div>
+      <div class="card card-b">
+        <div style="font-size:1.5rem; margin-bottom:6px;">📐</div>
+        <strong style="color:var(--accent-b)">(B) 엣지 다이 2종 동시 구분</strong>
+        <p style="margin-top:8px; font-size:0.9rem;"><code>is_edge_partial</code> (원 밖 걸침) +<br><code>is_edge_ring</code> (최외곽 격자 링) 항상 저장</p>
+      </div>
+      <div class="card card-c">
+        <div style="font-size:1.5rem; margin-bottom:6px;">📦</div>
+        <strong style="color:var(--accent-c)">(C) aligned_image 항상 반환</strong>
+        <p style="margin-top:8px; font-size:0.9rem;">0도여도 반환. 출력 크기 <strong>10000×10000</strong> 고정으로 좌표 일관성 보장</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════
+       SECTION V5.1: 각도 고도화 + 회전 깨짐 수정
+  ════════════════════════════════════════════════ -->
+  <section>
+    <h2><span class="sec-num" style="background:var(--accent-c)">V5.1</span>각도 고도화 + 회전 깨짐 수정</h2>
+
+    <!-- 메인 V5.1 카드 -->
+    <div class="card" style="border-left: 4px solid var(--accent-c); background: #101f1e;">
+      <p style="font-size:1.05rem; font-weight:600; color:var(--accent-c); margin-bottom:14px;">V5.1 — 세 가지 핵심 개선</p>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(240px,1fr)); gap:14px;">
+        <div style="background:var(--bg3); border-radius:8px; padding:16px 18px; border-top:3px solid var(--accent-c);">
+          <div style="font-size:1.2rem; margin-bottom:6px;">🔄</div>
+          <strong style="color:var(--accent-c)">(1) 회전 보간 CUBIC</strong>
+          <p style="margin-top:8px; font-size:0.88rem; color:var(--text-muted);">NEAREST → CUBIC 으로 변경.<br>다이 격자 계단/모아레 깨짐 제거.</p>
+        </div>
+        <div style="background:var(--bg3); border-radius:8px; padding:16px 18px; border-top:3px solid var(--purple);">
+          <div style="font-size:1.2rem; margin-bottom:6px;">📡</div>
+          <strong style="color:var(--purple)">(2) Projection + FFT 교차검증</strong>
+          <p style="margin-top:8px; font-size:0.88rem; color:var(--text-muted);">2개 독립 단서 합의.<br>큰 기울기(±10°)도 오차 ≤ 0.001°.</p>
+        </div>
+        <div style="background:var(--bg3); border-radius:8px; padding:16px 18px; border-top:3px solid var(--accent-b);">
+          <div style="font-size:1.2rem; margin-bottom:6px;">📊</div>
+          <strong style="color:var(--accent-b)">(3) 새 신뢰도 필드</strong>
+          <p style="margin-top:8px; font-size:0.88rem; color:var(--text-muted);"><code>angle_confidence</code>, <code>angle_agree</code>.<br>새 함수 <code>measure_wafer_angle_robust()</code>.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- (1) 회전 깨짐 수정 -->
+    <h3>(1) 회전 보간: INTER_NEAREST → INTER_CUBIC</h3>
+    <div class="card card-c">
+      <p>함수 <code>_rotate_wafer_keep_size</code> 의 보간법을 변경했습니다.</p>
+
+      <!-- 인라인 SVG: NEAREST vs CUBIC 계단 비교 -->
+      <div class="diagram-wrap" style="margin-top:16px;">
+        <svg viewBox="0 0 560 180" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:520px;">
+          <!-- NEAREST side -->
+          <text x="130" y="18" fill="#f76f6f" font-size="12" font-weight="bold" text-anchor="middle" font-family="Segoe UI, sans-serif">INTER_NEAREST — 계단 aliasing</text>
+          <g transform="translate(30, 30)">
+            <!-- jagged diagonal line (staircase) -->
+            <polyline points="0,80 10,80 10,70 20,70 20,60 30,60 30,50 40,50 40,40 50,40 50,30 60,30 60,20 70,20 70,10 80,10 90,10 100,0"
+              fill="none" stroke="#f76f6f" stroke-width="2.5"/>
+            <!-- grid overlay to show pixelation -->
+            <line x1="10" y1="30" x2="10" y2="90" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="20" y1="30" x2="20" y2="90" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="30" y1="10" x2="30" y2="90" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="40" y1="10" x2="40" y2="90" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="50" y1="10" x2="50" y2="90" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="60" y1="10" x2="60" y2="90" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="70" y1="10" x2="70" y2="90" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="0"  y1="40" x2="105" y2="40" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="0"  y1="50" x2="105" y2="50" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="0"  y1="60" x2="105" y2="60" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="0"  y1="70" x2="105" y2="70" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="0"  y1="80" x2="105" y2="80" stroke="#2e3350" stroke-width="0.8"/>
+          </g>
+          <text x="80" y="145" fill="#8892a4" font-size="10" text-anchor="middle" font-family="Segoe UI, sans-serif">격자선이 계단처럼 깨짐</text>
+
+          <!-- Divider arrow -->
+          <line x1="240" y1="80" x2="280" y2="80" stroke="#4fcca8" stroke-width="2" marker-end="url(#arrc)"/>
+          <defs>
+            <marker id="arrc" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L0,6 L8,3 z" fill="#4fcca8"/>
+            </marker>
+          </defs>
+          <text x="260" y="72" fill="#4fcca8" font-size="9" text-anchor="middle" font-family="Segoe UI, sans-serif">V5.1</text>
+
+          <!-- CUBIC side -->
+          <text x="420" y="18" fill="#56d48e" font-size="12" font-weight="bold" text-anchor="middle" font-family="Segoe UI, sans-serif">INTER_CUBIC — 매끈한 보간</text>
+          <g transform="translate(300, 30)">
+            <!-- smooth diagonal line -->
+            <path d="M0,80 C20,80 20,60 40,50 C60,40 60,20 80,10 C90,4 100,2 110,0"
+              fill="none" stroke="#56d48e" stroke-width="2.5"/>
+            <line x1="10" y1="30" x2="10" y2="90" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="20" y1="30" x2="20" y2="90" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="30" y1="10" x2="30" y2="90" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="40" y1="10" x2="40" y2="90" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="50" y1="10" x2="50" y2="90" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="60" y1="10" x2="60" y2="90" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="70" y1="10" x2="70" y2="90" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="0"  y1="40" x2="115" y2="40" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="0"  y1="50" x2="115" y2="50" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="0"  y1="60" x2="115" y2="60" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="0"  y1="70" x2="115" y2="70" stroke="#2e3350" stroke-width="0.8"/>
+            <line x1="0"  y1="80" x2="115" y2="80" stroke="#2e3350" stroke-width="0.8"/>
+          </g>
+          <text x="420" y="145" fill="#8892a4" font-size="10" text-anchor="middle" font-family="Segoe UI, sans-serif">격자선이 매끄럽게 보간됨</text>
+        </svg>
+        <figcaption>회전 후 다이 격자선 확대. 왼쪽(NEAREST): 픽셀 계단 aliasing. 오른쪽(CUBIC): 보간으로 매끈.</figcaption>
+      </div>
+    </div>
+    <div class="why">
+      다이 격자는 '주기적인 미세 패턴'입니다. NEAREST 보간으로 회전하면 픽셀 격자와 패턴 주기가 어긋날 때마다 계단/모아레가 생깁니다. CUBIC은 이웃 16픽셀을 보간해 회전 후에도 격자 선이 매끈합니다. 각도 측정은 다운스케일·이진화 기반이므로 약한 블러에 영향받지 않아 정확도 손실 없음. 회전각 0°이면 보간 자체를 건너뜁니다.
+    </div>
+    <div class="kpi-row">
+      <div class="kpi">
+        <div class="val" style="color:var(--accent-d)">7397</div>
+        <div class="lbl">Laplacian 분산<br>INTER_NEAREST</div>
+      </div>
+      <div class="kpi">
+        <div class="val green">5024</div>
+        <div class="lbl">Laplacian 분산<br>INTER_CUBIC ✓</div>
+      </div>
+      <div class="kpi">
+        <div class="val" style="color:var(--accent-c)">↓32%</div>
+        <div class="lbl">고주파 aliasing 감소<br>(깨짐 제거)</div>
+      </div>
+    </div>
+
+    <!-- (2) Projection + FFT 교차검증 -->
+    <h3>(2) 각도 측정: Projection + FFT 교차검증</h3>
+    <div class="card card-purple">
+      <p>V5.1 에서 각도는 <strong>두 개의 독립 단서</strong>를 교차검증하여 결정됩니다.</p>
+      <table style="margin-top:14px;">
+        <tr>
+          <th>단서</th>
+          <th>방법</th>
+          <th>특징</th>
+        </tr>
+        <tr>
+          <td><strong>Projection</strong></td>
+          <td>중앙 ROI Otsu 이진화 후 후보각 회전, 열/행 투영 분산 최대화</td>
+          <td>정밀(sub-0.01°), 이미지 픽셀만 사용 — 격자 검출 실패에 독립적</td>
+        </tr>
+        <tr>
+          <td><strong>FFT</strong></td>
+          <td>전체 이미지 2D 푸리에 진폭 스펙트럼에서 격자 축 peak를 4φ 합벡터로 추정</td>
+          <td>이미지 전체 반영, projection과 완전 독립</td>
+        </tr>
+      </table>
+    </div>
+    <div class="why">
+      V5 (이전): <code>detect_grid</code> 에 의존 → 격자 검출 실패 시 조용히 0도 반환하는 약점이 있었습니다.<br>
+      V5.1: 이미지 픽셀만으로 각도를 측정하므로 격자 검출 실패와 무관합니다. FFT는 이미지 전체를 활용해 projection과 독립적인 단서를 제공합니다.<br>
+      탐색 범위도 <strong>±3.5° → ±6°</strong> 로 확장되어 큰 기울기(±10°)도 포착합니다.
+    </div>
+
+    <h3>합의(agree) 로직</h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="num">1</div>
+        <div class="content">
+          <div class="title">두 단서 계산</div>
+          <div class="desc">Projection 각도와 FFT 각도를 독립적으로 측정합니다.</div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="num">2</div>
+        <div class="content">
+          <div class="title">합의 판정 (차이 &lt; 0.4°)</div>
+          <div class="desc">두 값이 0.4° 이내에서 일치 → <code>angle_agree=True</code>, <code>angle_confidence≈0.97</code></div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="num">3</div>
+        <div class="content">
+          <div class="title">불일치 시 — 넓은 재탐색</div>
+          <div class="desc">±44° 범위로 재탐색, 투영 peak 점수 최대 각도 채택. 절대 '조용히 0°' 로 실패하지 않습니다.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- (3) 새 필드/함수 -->
+    <h3>(3) 새 출력 필드 / 함수</h3>
+    <div class="card card-b">
+      <table>
+        <tr><th>이름</th><th>타입</th><th>설명</th></tr>
+        <tr>
+          <td><code>dm.angle_confidence</code></td>
+          <td>float (0~1)</td>
+          <td>각도 측정 신뢰도. 두 단서 합의 시 ≈ 0.97</td>
+        </tr>
+        <tr>
+          <td><code>dm.angle_agree</code></td>
+          <td>bool</td>
+          <td><code>False</code> 면 해당 이미지의 각도를 수동 검토 권장</td>
+        </tr>
+      </table>
+      <p style="margin-top:14px; font-weight:600; color:var(--accent-b);">새 공개 함수</p>
+      <pre style="margin-top:8px;"><code>measure_wafer_angle_robust(image, cx, cy, r) -> dict
+  # 반환 키: angle, confidence, agree, projection, fft, candidates</code></pre>
+    </div>
+
+    <!-- KPI 칩 -->
+    <h3>V5.1 KPI</h3>
+    <div class="kpi-row">
+      <div class="kpi">
+        <div class="val green">≤ 0.003°</div>
+        <div class="lbl">notch 3종 + 랜덤 12장<br>회귀 없음</div>
+      </div>
+      <div class="kpi">
+        <div class="val green">≤ 0.001°</div>
+        <div class="lbl">큰 기울기 복원<br>+2/+5/-7/+10°</div>
+      </div>
+      <div class="kpi">
+        <div class="val green">0.97</div>
+        <div class="lbl">angle_confidence<br>합의 시</div>
+      </div>
+      <div class="kpi">
+        <div class="val green">15/15</div>
+        <div class="lbl">agree=True<br>전체 통과</div>
+      </div>
+    </div>
+
+    <!-- 시각화 이미지 -->
+    <div class="diagram-wrap">
+      <img src="v5_angle_upgrade.png" alt="V5.1 angle upgrade visualization" class="overview-img">
+      <figcaption style="margin-top:12px;"><code>v5_angle_upgrade.png</code> — 좌: NEAREST vs CUBIC 회전 줌 비교 / 중: projection 곡선+FFT 일치 / 우: 큰 기울기(+2/+5/-7/+10°) 복원 결과표.<br><code>make_angle_upgrade_viz.py</code> 로 재생성 가능.</figcaption>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════
+       SECTION 1: 배경 — V4까지의 문제
+  ════════════════════════════════════════════════ -->
+  <section>
+    <h2><span class="sec-num">배경</span>V5 이전의 한계</h2>
+    <div class="card card-d">
+      <p>V4까지는 각도 정렬을 <strong>단 하나의 특징점</strong>에 의존했습니다.</p>
+      <table style="margin-top:14px;">
+        <tr><th>방식</th><th>의존 정보</th><th>문제점</th></tr>
+        <tr><td><code>notch</code></td><td>웨이퍼 하단 노치(V자 홈) 1개</td><td class="warn">노치가 흐리거나 가려지면 실패</td></tr>
+        <tr><td><code>vertical_line</code></td><td>이미지 내 수직선 1개</td><td class="warn">선이 끊기거나 노이즈 있으면 오류</td></tr>
+        <tr><td><code>none</code></td><td>—</td><td class="warn">정렬 생략 → 좌표 틀어짐</td></tr>
+      </table>
+    </div>
+    <div class="why">수십~수백 개의 다이 격자가 이미지 전체에 걸쳐 있는데, 그 정보를 전혀 활용하지 않고 노치 하나에만 의존하는 것은 낭비입니다. V5는 격자 전체를 써서 훨씬 더 정밀하게 각도를 측정합니다.</div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════
+       SECTION 2: die_render 각도 정렬
+  ════════════════════════════════════════════════ -->
+  <section>
+    <h2><span class="sec-num">A</span>새 기본 각도 정렬: die_render 방식</h2>
+
+    <h3>2.1 핵심 아이디어: 다이 격자 = 소잉 라인 패턴</h3>
+    <div class="card card-a">
+      <p>실제 웨이퍼를 관찰한 결과, <strong>소잉 라인의 폭은 <code>cv2.rectangle(thickness=3)</code> 의 두께와 일치</strong>합니다.</p>
+      <p style="margin-top:10px;">따라서 검출된 다이 격자에서 두께 3짜리 사각형을 모두 그리면 → 실제 소잉 라인 격자 구조와 동일한 바이너리 마스크를 얻을 수 있습니다.</p>
+    </div>
+
+    <!-- SVG Diagram 1: Thickness-3 rectangles forming sawline grid -->
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 580 240" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:560px;">
+        <defs>
+          <pattern id="grid" x="0" y="0" width="80" height="80" patternUnits="userSpaceOnUse">
+            <!-- die body fill -->
+            <rect x="6" y="6" width="68" height="68" fill="#1e3a5f" opacity="0.6"/>
+            <!-- thickness-3 border (sawline) -->
+            <rect x="0" y="0" width="80" height="80" fill="none" stroke="#4f8ef7" stroke-width="3"/>
+          </pattern>
+        </defs>
+        <!-- Grid tiles -->
+        <rect x="40" y="20" width="320" height="200" fill="url(#grid)"/>
+        <!-- Labels -->
+        <text x="210" y="245" fill="#8892a4" font-size="12" text-anchor="middle" font-family="Segoe UI, sans-serif">① 다이 격자로 thickness=3 사각형을 모두 렌더링</text>
+        <!-- Arrow -->
+        <line x1="390" y1="110" x2="430" y2="110" stroke="#4f8ef7" stroke-width="2" marker-end="url(#arr)"/>
+        <defs>
+          <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#4f8ef7"/>
+          </marker>
+        </defs>
+        <!-- Result: binarized sawline-only image -->
+        <rect x="430" y="20" width="130" height="200" fill="#0b0e18" rx="4" stroke="#2e3350"/>
+        <!-- Sawlines only (white on black) -->
+        <line x1="430" y1="23" x2="560" y2="23" stroke="#dce8ff" stroke-width="3"/>
+        <line x1="430" y1="103" x2="560" y2="103" stroke="#dce8ff" stroke-width="3"/>
+        <line x1="430" y1="183" x2="560" y2="183" stroke="#dce8ff" stroke-width="3"/>
+        <line x1="433" y1="20" x2="433" y2="220" stroke="#dce8ff" stroke-width="3"/>
+        <line x1="513" y1="20" x2="513" y2="220" stroke="#dce8ff" stroke-width="3"/>
+        <text x="495" y="235" fill="#8892a4" font-size="10" text-anchor="middle" font-family="Segoe UI, sans-serif">격자 마스크</text>
+      </svg>
+      <figcaption>그림 1. 다이 격자에서 thickness=3 사각형으로 렌더링한 소잉 라인 마스크.<br>관련 함수: <code>render_die_grid_mask()</code></figcaption>
+    </div>
+
+    <h3>2.2 각도 측정 원리: 투영 분산 최대화</h3>
+    <div class="card card-a">
+      <p>렌더링된 격자 마스크의 <strong>중앙 ROI</strong>를 잘라내고, <strong>Otsu 이진화</strong>를 적용합니다.</p>
+      <p style="margin-top:8px;"><strong>Otsu를 쓰는 이유</strong>: 다이 본체가 밝든 어둡든, 소잉 라인이 밝든 어둡든 — 이진화가 항상 올바르게 격자 구조를 분리합니다 (밝기 극성 독립성).</p>
+      <p style="margin-top:8px;">그 다음 이 이진 이미지를 여러 각도로 회전하면서 <strong>열(column) 분산 + 행(row) 분산</strong>의 합을 측정합니다.</p>
+    </div>
+
+    <!-- SVG Diagram 2: Projection variance peak at correct angle -->
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 580 260" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:560px;">
+        <!-- Left: tilted grid -->
+        <g transform="translate(60,40)">
+          <text x="50" y="-10" fill="#f76f6f" font-size="11" text-anchor="middle" font-family="Segoe UI, sans-serif">θ 기울어짐</text>
+          <g transform="rotate(8, 50, 80)">
+            <rect x="10" y="10" width="40" height="40" fill="none" stroke="#4f8ef7" stroke-width="2.5"/>
+            <rect x="50" y="10" width="40" height="40" fill="none" stroke="#4f8ef7" stroke-width="2.5"/>
+            <rect x="10" y="50" width="40" height="40" fill="none" stroke="#4f8ef7" stroke-width="2.5"/>
+            <rect x="50" y="50" width="40" height="40" fill="none" stroke="#4f8ef7" stroke-width="2.5"/>
+          </g>
+          <!-- flat projection -->
+          <line x1="0" y1="155" x2="100" y2="155" stroke="#2e3350" stroke-width="1.5"/>
+          <polyline points="0,155 15,152 25,151 35,153 45,155 55,152 65,151 75,153 85,155 100,155" fill="none" stroke="#f76f6f" stroke-width="2"/>
+          <text x="50" y="170" fill="#8892a4" font-size="9" text-anchor="middle" font-family="Segoe UI, sans-serif">투영: 분산 낮음</text>
+        </g>
+
+        <!-- Arrow -->
+        <line x1="185" y1="100" x2="225" y2="100" stroke="#8892a4" stroke-width="1.5" marker-end="url(#arr2)"/>
+        <defs>
+          <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#8892a4"/>
+          </marker>
+        </defs>
+        <text x="204" y="90" fill="#4fcca8" font-size="9" text-anchor="middle" font-family="Segoe UI, sans-serif">각도 탐색</text>
+
+        <!-- Right: aligned grid -->
+        <g transform="translate(235,40)">
+          <text x="50" y="-10" fill="#56d48e" font-size="11" text-anchor="middle" font-family="Segoe UI, sans-serif">최적 각도 θ*</text>
+          <rect x="10" y="10" width="40" height="40" fill="none" stroke="#56d48e" stroke-width="2.5"/>
+          <rect x="50" y="10" width="40" height="40" fill="none" stroke="#56d48e" stroke-width="2.5"/>
+          <rect x="10" y="50" width="40" height="40" fill="none" stroke="#56d48e" stroke-width="2.5"/>
+          <rect x="50" y="50" width="40" height="40" fill="none" stroke="#56d48e" stroke-width="2.5"/>
+          <!-- sharp column projection -->
+          <line x1="0" y1="155" x2="100" y2="155" stroke="#2e3350" stroke-width="1.5"/>
+          <polyline points="0,155 10,155 12,140 13,125 14,142 15,155 50,155 52,140 53,125 54,142 55,155 90,155 92,140 93,125 94,142 95,155 100,155" fill="none" stroke="#56d48e" stroke-width="2"/>
+          <text x="50" y="170" fill="#8892a4" font-size="9" text-anchor="middle" font-family="Segoe UI, sans-serif">투영: 분산 최대 ↑</text>
+        </g>
+
+        <!-- Variance curve on the right -->
+        <g transform="translate(385,30)">
+          <text x="75" y="0" fill="#c5cde0" font-size="11" text-anchor="middle" font-family="Segoe UI, sans-serif">분산 vs 각도</text>
+          <rect x="0" y="10" width="150" height="120" fill="#0b0e18" rx="4" stroke="#2e3350"/>
+          <!-- Axes -->
+          <line x1="20" y1="115" x2="145" y2="115" stroke="#2e3350" stroke-width="1.5"/>
+          <line x1="20" y1="115" x2="20" y2="15" stroke="#2e3350" stroke-width="1.5"/>
+          <!-- Variance curve (parabola-ish peak) -->
+          <polyline points="20,110 40,105 60,95 75,60 90,58 105,70 120,90 140,108" fill="none" stroke="#4f8ef7" stroke-width="2.5"/>
+          <!-- Peak marker -->
+          <circle cx="90" cy="58" r="4" fill="#f7c94f"/>
+          <line x1="90" y1="58" x2="90" y2="115" stroke="#f7c94f" stroke-dasharray="4,3" stroke-width="1.5"/>
+          <text x="90" y="128" fill="#f7c94f" font-size="9" text-anchor="middle" font-family="Segoe UI, sans-serif">θ*</text>
+          <text x="10" y="8" fill="#8892a4" font-size="9" font-family="Segoe UI, sans-serif">분산↑</text>
+          <text x="148" y="120" fill="#8892a4" font-size="9" text-anchor="end" font-family="Segoe UI, sans-serif">각도→</text>
+        </g>
+
+        <text x="290" y="250" fill="#8892a4" font-size="11" text-anchor="middle" font-family="Segoe UI, sans-serif">
+          그림 2. 격자가 수평·수직에 정렬될 때 열/행 투영의 분산이 최대가 된다
+        </text>
+      </svg>
+      <figcaption>분산이 최대인 각도 = 다이 격자가 축-정렬(axis-aligned)된 각도.<br>관련 함수: <code>measure_die_render_angle()</code></figcaption>
+    </div>
+
+    <h3>2.3 탐색 전략: 3단계 정밀화</h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="num">1</div>
+        <div class="content">
+          <div class="title">거친 탐색 (0.1° 간격)</div>
+          <div class="desc">전체 범위를 빠르게 스캔해 최적 각도 부근을 파악합니다.</div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="num">2</div>
+        <div class="content">
+          <div class="title">세밀 탐색 (0.02° 간격)</div>
+          <div class="desc">1단계 최적값 ±0.5° 범위를 더 좁은 간격으로 재탐색합니다.</div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="num">3</div>
+        <div class="content">
+          <div class="title">포물선 보간 (sub-step 정밀도)</div>
+          <div class="desc">상위 3점으로 2차 함수를 피팅해 스텝 크기보다 작은 정밀도를 달성합니다.</div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="num">4</div>
+        <div class="content">
+          <div class="title">반복 (residual → 0.0000)</div>
+          <div class="desc">잔차가 0에 가까워질 때까지 2~3회 반복합니다. 수렴 후 종료.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="why">
+      하나의 탐색 패스만으로는 스텝 크기(0.02°) 수준의 정밀도밖에 안 됩니다. 포물선 보간으로 0.003° 이하까지 끌어내리고, 반복으로 잔차를 완전히 0으로 만듭니다.
+    </div>
+
+    <h3>2.4 왜 die_render가 최선인가?</h3>
+    <table>
+      <tr>
+        <th>항목</th>
+        <th style="color:var(--accent-a)">die_render</th>
+        <th>notch</th>
+        <th>vertical_line</th>
+      </tr>
+      <tr>
+        <td>사용 정보량</td>
+        <td class="good">수십~수백 개 다이 격자 전체</td>
+        <td>노치 1개</td>
+        <td>선 1개</td>
+      </tr>
+      <tr>
+        <td>양 축(수평+수직) 동시 사용</td>
+        <td class="good">O (열+행 분산 합산)</td>
+        <td class="warn">X</td>
+        <td class="warn">X</td>
+      </tr>
+      <tr>
+        <td>격자 위상(origin)과 무관</td>
+        <td class="good">O</td>
+        <td>—</td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td>다이 밝기/극성에 무관</td>
+        <td class="good">O (Otsu 이진화)</td>
+        <td>△</td>
+        <td>△</td>
+      </tr>
+      <tr>
+        <td>각도 오차</td>
+        <td class="good">≤ 0.003°</td>
+        <td class="warn">~0.02–0.07°</td>
+        <td class="warn">~0.02–0.07°</td>
+      </tr>
+    </table>
+
+    <h3>2.5 관련 함수</h3>
+    <pre><code>render_die_grid_mask()       # thickness=3 격자 마스크 생성
+measure_die_render_angle()   # 투영 분산 최대화로 각도 측정
+align_wafer_by_die_render()  # 위 두 함수를 이용한 정렬 실행</code></pre>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════
+       SECTION 3: 엣지 다이 2종 구분
+  ════════════════════════════════════════════════ -->
+  <section>
+    <h2><span class="sec-num">B</span>엣지 다이 2종 동시 구분</h2>
+
+    <h3>3.1 두 가지 정의가 왜 필요한가</h3>
+    <div class="card card-b">
+      <p>"엣지 다이"의 의미는 <strong>분석 목적에 따라 다릅니다</strong>.</p>
+      <table style="margin-top:14px;">
+        <tr><th>목적</th><th>관심 있는 엣지 정의</th><th>속성</th></tr>
+        <tr><td>수율 분석 (Yield)</td><td>원 밖으로 잘린 부분 다이</td><td><code>is_edge_partial</code></td></tr>
+        <tr><td>근접 효과, 격자 위상 분석</td><td>이웃 다이가 없는 최외곽 다이</td><td><code>is_edge_ring</code></td></tr>
+      </table>
+      <p style="margin-top:12px;">V4까지는 하나만 저장 → 목적 변경 시 다이 맵 재생성 필요.<br>V5는 <strong>두 정의를 항상 함께 계산·저장</strong>합니다.</p>
+    </div>
+
+    <h3>3.2 각 정의 시각화</h3>
+
+    <!-- SVG Diagram 3: Two EDGE definitions -->
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 580 280" xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width:560px;">
+
+        <!-- === LEFT: is_edge_partial === -->
+        <g transform="translate(20, 20)">
+          <text x="120" y="16" fill="#f7c94f" font-size="13" font-weight="bold" text-anchor="middle" font-family="Segoe UI, sans-serif">is_edge_partial</text>
+          <text x="120" y="30" fill="#8892a4" font-size="10" text-anchor="middle" font-family="Segoe UI, sans-serif">원 밖으로 걸친 다이</text>
+
+          <!-- Wafer circle -->
+          <circle cx="120" cy="150" r="100" fill="none" stroke="#4f8ef7" stroke-width="2" stroke-dasharray="6,4"/>
+          <circle cx="120" cy="150" r="100" fill="#1a2340" opacity="0.3"/>
+
+          <!-- Die grid (6x6, center-aligned on wafer) -->
+          <!-- Internal dies: fully inside -->
+          <rect x="54"  y="84"  width="44" height="44" fill="#1e3a5f" stroke="#56d48e" stroke-width="2"/>
+          <rect x="98"  y="84"  width="44" height="44" fill="#1e3a5f" stroke="#56d48e" stroke-width="2"/>
+          <rect x="54"  y="128" width="44" height="44" fill="#1e3a5f" stroke="#56d48e" stroke-width="2"/>
+          <rect x="98"  y="128" width="44" height="44" fill="#1e3a5f" stroke="#56d48e" stroke-width="2"/>
+          <rect x="54"  y="172" width="44" height="44" fill="#1e3a5f" stroke="#56d48e" stroke-width="2"/>
+          <rect x="98"  y="172" width="44" height="44" fill="#1e3a5f" stroke="#56d48e" stroke-width="2"/>
+          <!-- Edge-partial dies (overlap wafer edge) -->
+          <rect x="142" y="84"  width="44" height="44" fill="#3d2a10" stroke="#f7c94f" stroke-width="2.5" stroke-dasharray="5,3"/>
+          <rect x="142" y="128" width="44" height="44" fill="#3d2a10" stroke="#f7c94f" stroke-width="2.5" stroke-dasharray="5,3"/>
+          <rect x="142" y="172" width="44" height="44" fill="#3d2a10" stroke="#f7c94f" stroke-width="2.5" stroke-dasharray="5,3"/>
+          <rect x="10"  y="84"  width="44" height="44" fill="#3d2a10" stroke="#f7c94f" stroke-width="2.5" stroke-dasharray="5,3"/>
+          <rect x="10"  y="128" width="44" height="44" fill="#3d2a10" stroke="#f7c94f" stroke-width="2.5" stroke-dasharray="5,3"/>
+          <rect x="10"  y="172" width="44" height="44" fill="#3d2a10" stroke="#f7c94f" stroke-width="2.5" stroke-dasharray="5,3"/>
+          <!-- Legend -->
+          <rect x="20" y="250" width="14" height="10" fill="#1e3a5f" stroke="#56d48e" stroke-width="1.5"/>
+          <text x="38" y="259" fill="#56d48e" font-size="10" font-family="Segoe UI, sans-serif">정상 다이</text>
+          <rect x="100" y="250" width="14" height="10" fill="#3d2a10" stroke="#f7c94f" stroke-width="1.5" stroke-dasharray="4,2"/>
+          <text x="118" y="259" fill="#f7c94f" font-size="10" font-family="Segoe UI, sans-serif">원 밖 걸침 (partial)</text>
+        </g>
+
+        <!-- Divider -->
+        <line x1="290" y1="20" x2="290" y2="270" stroke="#2e3350" stroke-width="1.5" stroke-dasharray="4,4"/>
+
+        <!-- === RIGHT: is_edge_ring === -->
+        <g transform="translate(300, 20)">
+          <text x="120" y="16" fill="#b57bee" font-size="13" font-weight="bold" text-anchor="middle" font-family="Segoe UI, sans-serif">is_edge_ring</text>
+          <text x="120" y="30" fill="#8892a4" font-size="10" text-anchor="middle" font-family="Segoe UI, sans-serif">8방향 이웃 중 빠진 것 있는 최외곽 다이</text>
+
+          <!-- Grid 5x5 with center -->
+          <!-- Row 0: top ring -->
+          <rect x="54"  y="55"  width="40" height="40" fill="#2a1e40" stroke="#b57bee" stroke-width="2" stroke-dasharray="5,3"/>
+          <rect x="94"  y="55"  width="40" height="40" fill="#2a1e40" stroke="#b57bee" stroke-width="2" stroke-dasharray="5,3"/>
+          <rect x="134" y="55"  width="40" height="40" fill="#2a1e40" stroke="#b57bee" stroke-width="2" stroke-dasharray="5,3"/>
+
+          <!-- Row 1 -->
+          <rect x="54"  y="95"  width="40" height="40" fill="#2a1e40" stroke="#b57bee" stroke-width="2" stroke-dasharray="5,3"/>
+          <rect x="94"  y="95"  width="40" height="40" fill="#1e3a5f" stroke="#56d48e" stroke-width="2"/>
+          <rect x="134" y="95"  width="40" height="40" fill="#2a1e40" stroke="#b57bee" stroke-width="2" stroke-dasharray="5,3"/>
+
+          <!-- Row 2: center -->
+          <rect x="54"  y="135" width="40" height="40" fill="#2a1e40" stroke="#b57bee" stroke-width="2" stroke-dasharray="5,3"/>
+          <rect x="94"  y="135" width="40" height="40" fill="#1e3a5f" stroke="#56d48e" stroke-width="2"/>
+          <rect x="134" y="135" width="40" height="40" fill="#2a1e40" stroke="#b57bee" stroke-width="2" stroke-dasharray="5,3"/>
+
+          <!-- Row 3 -->
+          <rect x="54"  y="175" width="40" height="40" fill="#2a1e40" stroke="#b57bee" stroke-width="2" stroke-dasharray="5,3"/>
+          <rect x="94"  y="175" width="40" height="40" fill="#1e3a5f" stroke="#56d48e" stroke-width="2"/>
+          <rect x="134" y="175" width="40" height="40" fill="#2a1e40" stroke="#b57bee" stroke-width="2" stroke-dasharray="5,3"/>
+
+          <!-- "Missing" slots (no die, just placeholder) -->
+          <rect x="14"  y="95"  width="40" height="40" fill="none" stroke="#2e3350" stroke-width="1" stroke-dasharray="3,5"/>
+          <rect x="14"  y="135" width="40" height="40" fill="none" stroke="#2e3350" stroke-width="1" stroke-dasharray="3,5"/>
+          <rect x="14"  y="175" width="40" height="40" fill="none" stroke="#2e3350" stroke-width="1" stroke-dasharray="3,5"/>
+          <text x="34" y="120" fill="#2e3350" font-size="9" text-anchor="middle" font-family="Segoe UI, sans-serif">없음</text>
+          <text x="34" y="160" fill="#2e3350" font-size="9" text-anchor="middle" font-family="Segoe UI, sans-serif">없음</text>
+          <text x="34" y="200" fill="#2e3350" font-size="9" text-anchor="middle" font-family="Segoe UI, sans-serif">없음</text>
+
+          <!-- Legend -->
+          <rect x="20" y="250" width="14" height="10" fill="#1e3a5f" stroke="#56d48e" stroke-width="1.5"/>
+          <text x="38" y="259" fill="#56d48e" font-size="10" font-family="Segoe UI, sans-serif">내부 다이</text>
+          <rect x="100" y="250" width="14" height="10" fill="#2a1e40" stroke="#b57bee" stroke-width="1.5" stroke-dasharray="4,2"/>
+          <text x="118" y="259" fill="#b57bee" font-size="10" font-family="Segoe UI, sans-serif">링 다이 (이웃 없음)</text>
+        </g>
+      </svg>
+      <figcaption>그림 3. 두 가지 엣지 다이 정의. 왼쪽: 웨이퍼 원 밖으로 걸치는 부분 다이(is_edge_partial). 오른쪽: 8방향 이웃 중 하나라도 없는 링 다이(is_edge_ring).</figcaption>
+    </div>
+
+    <h3>3.3 edge_mode 파라미터</h3>
+    <div class="card card-b">
+      <table>
+        <tr><th>edge_mode</th><th>is_edge 의미</th><th>비고</th></tr>
+        <tr><td><code>"circle"</code> <span style="color:var(--green);font-size:0.8em">(기본값)</span></td><td>is_edge_partial 과 동일</td><td>수율 분석에 적합</td></tr>
+        <tr><td><code>"ring"</code></td><td>is_edge_ring 과 동일</td><td>격자 분석에 적합</td></tr>
+        <tr><td><code>"both"</code></td><td>partial OR ring</td><td>두 조건 중 하나라도 해당</td></tr>
+      </table>
+      <p style="margin-top:12px; font-size:0.9rem;">
+        <code>is_edge_partial</code>, <code>is_edge_ring</code> 은 <strong>edge_mode와 무관하게 항상 저장</strong>됩니다.<br>
+        <code>locate_die()</code> 결과에도 세 값이 모두 반환됩니다.
+      </p>
+    </div>
+
+    <h3>3.4 샘플 통계 (green 샘플)</h3>
+    <div class="kpi-row">
+      <div class="kpi">
+        <div class="val gold">84</div>
+        <div class="lbl">is_edge_partial<br>(원 밖 걸친 다이)</div>
+      </div>
+      <div class="kpi">
+        <div class="val" style="color:var(--purple)">186</div>
+        <div class="lbl">is_edge_ring<br>(최외곽 격자 링)</div>
+      </div>
+      <div class="kpi">
+        <div class="val blue">edge_mode</div>
+        <div class="lbl">build_die_map() 파라미터로<br>is_edge 기준 선택</div>
+      </div>
+    </div>
+    <div class="why">링 다이가 부분 다이보다 훨씬 많은 이유: 링 다이는 원 안에 완전히 들어가 있어도, 격자 격자 이웃이 없으면 링으로 분류되기 때문입니다. 두 정의를 혼동하면 수율 통계가 크게 달라질 수 있습니다.</div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════
+       SECTION 4: aligned_image 항상 반환
+  ════════════════════════════════════════════════ -->
+  <section>
+    <h2><span class="sec-num">C</span>aligned_image 항상 반환 + 크기 고정</h2>
+
+    <div class="card card-c">
+      <table>
+        <tr><th></th><th>V4</th><th style="color:var(--accent-c)">V5</th></tr>
+        <tr>
+          <td>0도 or none 시 aligned_image</td>
+          <td class="warn">없거나 원본 그대로</td>
+          <td class="good">항상 반환</td>
+        </tr>
+        <tr>
+          <td>출력 이미지 크기</td>
+          <td class="warn">각도에 따라 가변 (커질 수 있음)</td>
+          <td class="good">항상 10000×10000 고정</td>
+        </tr>
+        <tr>
+          <td>좌표 공간</td>
+          <td class="warn">각도마다 달라짐</td>
+          <td class="good">항상 aligned_image 기준으로 일관</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="why">
+      OpenCV의 <code>warpAffine</code>은 회전 각도에 따라 출력 크기가 달라집니다. 크기가 변하면 다이 픽셀 좌표도 이미지마다 달라져 다운스트림 코드가 복잡해집니다. 10000×10000으로 고정하면 좌표 공간이 항상 동일하게 유지됩니다.
+    </div>
+
+    <pre><code># 사용 예
+dm = build_die_map("wafer.jpg")
+img = dm.aligned_image          # 항상 (10000, 10000, 3) 또는 (10000, 10000)
+print(img.shape)                # → (10000, 10000, 3)</code></pre>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════
+       SECTION 5: 개요 이미지
+  ════════════════════════════════════════════════ -->
+  <section>
+    <h2><span class="sec-num">결과</span>V5 오버뷰 이미지</h2>
+    <p style="margin-bottom:16px; color:var(--text-muted)">die_render 격자(두께 3) 오버레이 + EDGE 2종 구분 맵</p>
+    <div class="diagram-wrap">
+      <img src="v5_overview.png" alt="V5 Overview: die_render grid overlay + EDGE 2-type map" class="overview-img">
+      <figcaption style="margin-top:12px;"><code>v5_overview.png</code> — die_render 오버레이(파란 격자) + 부분 다이(노란색) + 링 다이(보라색) 구분 맵. <code>make_v5_viz.py</code> 로 재생성 가능.</figcaption>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════
+       SECTION 6: 전체 처리 흐름
+  ════════════════════════════════════════════════ -->
+  <section>
+    <h2><span class="sec-num">흐름</span>전체 처리 흐름 요약</h2>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="num">1</div>
+        <div class="content">
+          <div class="title">웨이퍼 원 검출</div>
+          <div class="desc">HoughCircles 또는 contour 기반으로 웨이퍼의 중심(cx, cy)과 반경(r)을 검출합니다.</div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="num">2</div>
+        <div class="content">
+          <div class="title">예비 다이 격자 검출 (pitch + origin)</div>
+          <div class="desc">corner 방식 1차 시도 → 실패 시 autocorrelation 기반(std / hybrid)으로 자동 폴백. 기울어진 이미지에서도 안정 동작.</div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="num">3</div>
+        <div class="content">
+          <div class="title">각도 정렬 (angle_align_method 선택)</div>
+          <div class="desc">
+            <code>die_render</code> (기본): render_die_grid_mask → Otsu 이진화 → 투영 분산 최대화 → 잔차 0까지 반복<br>
+            또는 <code>notch</code> / <code>vertical_line</code> / <code>none</code>
+          </div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="num">4</div>
+        <div class="content">
+          <div class="title">aligned_image 생성</div>
+          <div class="desc">항상 10000×10000으로 출력합니다. 각도가 0도여도 반환합니다.</div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="num">5</div>
+        <div class="content">
+          <div class="title">정렬된 이미지로 다이 격자 재계산</div>
+          <div class="desc">최종 pitch, origin, 전체 다이 목록을 계산합니다.</div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="num">6</div>
+        <div class="content">
+          <div class="title">다이별 엣지 속성 계산</div>
+          <div class="desc"><code>is_edge_partial</code> (원 밖 걸침) 과 <code>is_edge_ring</code> (최외곽 격자 링) 을 모든 다이에 대해 계산합니다.</div>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="num">7</div>
+        <div class="content">
+          <div class="title">WaferDieMap 반환</div>
+          <div class="desc"><code>build_die_map()</code> 이 완성된 WaferDieMap 객체를 반환합니다.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════
+       SECTION 7: 정확도 검증
+  ════════════════════════════════════════════════ -->
+  <section>
+    <h2><span class="sec-num">정확도</span>검증 결과</h2>
+
+    <div class="kpi-row">
+      <div class="kpi">
+        <div class="val green">≤ 0.001°</div>
+        <div class="lbl">실측 노치 이미지<br>(green/blue/mint)</div>
+      </div>
+      <div class="kpi">
+        <div class="val green">0.0000</div>
+        <div class="lbl">residual<br>(수렴 후 잔차)</div>
+      </div>
+      <div class="kpi">
+        <div class="val green">≤ 0.003°</div>
+        <div class="lbl">랜덤 틸트 12장<br>(-3° ~ +3°) 최대 오차</div>
+      </div>
+      <div class="kpi">
+        <div class="val green">12/12</div>
+        <div class="lbl">verified=True<br>전체 통과</div>
+      </div>
+    </div>
+
+    <table>
+      <tr><th>방식</th><th>전형적 각도 오차</th><th>비고</th></tr>
+      <tr>
+        <td><code>die_render</code> <span style="color:var(--green);font-size:0.8em">(V5 기본)</span></td>
+        <td class="good">≤ 0.003°</td>
+        <td>전체 격자 활용, 양 축 동시</td>
+      </tr>
+      <tr>
+        <td><code>notch</code></td>
+        <td class="warn">~0.02–0.07°</td>
+        <td>노치 1개 의존</td>
+      </tr>
+      <tr>
+        <td><code>vertical_line</code></td>
+        <td class="warn">~0.02–0.07°</td>
+        <td>수직선 1개 의존</td>
+      </tr>
+    </table>
+
+    <div class="why">
+      0.003° 오차는 5인치(127mm) 웨이퍼에서 약 <strong>3.3 µm</strong>의 위치 오차에 해당합니다. 일반적인 다이 피치(수십~수백 µm)에 비해 무시할 수 있는 수준입니다.
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════
+       SECTION 8: 사용 예
+  ════════════════════════════════════════════════ -->
+  <section>
+    <h2><span class="sec-num">사용</span>코드 예시</h2>
+    <pre><code>from wafer_die_map_v5 import build_die_map, locate_die
+
+# 기본 사용 (die_render 정렬, edge_mode="circle")
+dm = build_die_map("wafer.jpg")
+
+# 각도 정렬 방식 변경
+dm = build_die_map("wafer.jpg", angle_align_method="notch")
+
+# 두 가지 엣지 정의 모두 활성화
+dm = build_die_map("wafer.jpg", edge_mode="both")
+
+# 정렬된 이미지 (항상 10000x10000)
+img = dm.aligned_image
+
+# 특정 영역의 다이 조회
+r = locate_die(dm, bbox=(x1, y1, x2, y2))
+print(r["die_index"])       # (row, col)
+print(r["die_rect_px"])     # (x1, y1, x2, y2) 픽셀
+print(r["real_coord"])      # (x_mm, y_mm)
+print(r["is_edge"])         # edge_mode 기준 엣지 여부
+print(r["is_edge_partial"]) # 원 밖 걸침 여부
+print(r["is_edge_ring"])    # 최외곽 링 여부
+print(r["edge_mode"])       # 빌드 시 edge_mode 값</code></pre>
+  </section>
+
+  <footer>
+    <div class="container">
+      <p>Wafer Die Map V5 — 로직 설명서 · numpy + opencv-python · Python 3.9</p>
+      <p style="margin-top:6px;"><a href="README.md">README.md</a> &nbsp;·&nbsp; <a href="LOGIC_SPEC.md">LOGIC_SPEC.md</a> &nbsp;·&nbsp; <a href="wafer_die_map_v5.py">wafer_die_map_v5.py</a></p>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>
