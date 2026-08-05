@@ -639,6 +639,7 @@ def clip_die(image: np.ndarray, center_x: int, center_y: int,
 DEFAULT_GRID_METHOD = "corner"   # "corner"(권장, street 선으로 코너 직접 검출) | "hybrid" | "std" | "color"
 DEFAULT_PIXEL_PER_UNIT = 32      # 실측 좌표 환산 (px / unit)
 DEFAULT_EDGE_MARGIN = 1.0        # die 포함 기준: 중심거리 <= r * 이값.
+DEFAULT_CLIP_PARTIAL_EDGE = True # wafer 밖을 걸치는 die는 map에서 제외
                                  #   1.0=원 안의 die 전부(EDGE 포함), 0.98=가장자리 제외
 
 # --- EDGE die 판정 방식 (둘 다 계산되어 entry 에 저장; is_edge 가 무엇을 가리킬지 선택) ---
@@ -803,11 +804,24 @@ def _resolve_edge_flag(is_partial: bool, is_ring: bool, edge_mode: str) -> bool:
 def _load_bgr(image: Union[str, Path, np.ndarray]) -> np.ndarray:
     """경로(str/Path) 또는 BGR ndarray 를 받아 BGR 이미지로 반환."""
     if isinstance(image, np.ndarray):
-        return image
-    img = cv2.imread(str(image), cv2.IMREAD_COLOR)
-    if img is None:
+        if image.size == 0:
+            raise ValueError("image ndarray must not be empty")
+        if image.ndim == 2:
+            return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        if image.ndim != 3:
+            raise ValueError(f"image ndarray must have 2 or 3 dimensions, got {image.ndim}")
+        if image.shape[2] == 1:
+            return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        if image.shape[2] == 3:
+            return image
+        if image.shape[2] == 4:
+            return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+        raise ValueError(f"image ndarray must have 1, 3, or 4 channels, got {image.shape[2]}")
+
+    loaded = cv2.imread(str(image), cv2.IMREAD_UNCHANGED)
+    if loaded is None:
         raise FileNotFoundError(str(image))
-    return img
+    return _load_bgr(loaded)
 
 
 def _rotate_wafer_keep_size(image_bgr: np.ndarray,
@@ -1962,6 +1976,8 @@ def build_die_map(image: Union[str, Path, np.ndarray],
                   pixel_per_unit: int = DEFAULT_PIXEL_PER_UNIT,
                   include_edge: bool = True,
                   edge_margin: float = DEFAULT_EDGE_MARGIN,
+                  clip_partial_edge: bool = DEFAULT_CLIP_PARTIAL_EDGE,
+                  edge_clip_margin_px: int = -1,
                   die_template_path: Optional[str] = None,
                   with_crops: bool = False,
                   border_mode: str = "pad",
@@ -2075,33 +2091,49 @@ def build_die_map(image: Union[str, Path, np.ndarray],
 
     die_w = int(round(pitch_x))
     die_h = int(round(pitch_y))
+    if edge_clip_margin_px < 0:
+        edge_clip_margin_px = max(2, int(round(min(die_w, die_h) * 0.10)))
+    else:
+        edge_clip_margin_px = max(0, int(edge_clip_margin_px))
 
     # 3) 전체 격자 위치 순회 (원본 inspect_wafer 와 동일한 중심/실측 공식)
     max_ix = int(np.ceil(wafer_r / pitch_x)) + 2
     max_iy = int(np.ceil(wafer_r / pitch_y)) + 2
     margin = edge_margin if include_edge else 0.98
-    r_lim_sq = (wafer_r * margin) ** 2
+    r_lim = max(0.0, wafer_r * margin - float(edge_clip_margin_px))
+    r_lim_sq = r_lim ** 2
 
     dies: List[Dict[str, Any]] = []
     dies_by_index: Dict[Tuple[int, int], Dict[str, Any]] = {}
 
     for iy in range(-max_iy, max_iy + 1):
         for ix in range(-max_ix, max_ix + 1):
-            cx_d = int(round(x0 + ix * pitch_x + pitch_x / 2))
-            cy_d = int(round(y0 - iy * pitch_y - pitch_y / 2))
+            # Shared float boundaries prevent cumulative pixel drift.  The
+            # midpoint remains the die center even when the die contains
+            # bright vertical or horizontal circuit patterns.
+            x_a = int(round(x0 + ix * pitch_x))
+            x_b = int(round(x0 + (ix + 1) * pitch_x))
+            y_a = int(round(y0 - (iy + 1) * pitch_y))
+            y_b = int(round(y0 - iy * pitch_y))
+            if x_b <= x_a or y_b <= y_a:
+                continue
+            cx_d = int(round((x_a + x_b) / 2.0))
+            cy_d = int(round((y_a + y_b) / 2.0))
 
             dx = cx_d - wafer_cx
             dy = cy_d - wafer_cy
             if dx * dx + dy * dy > r_lim_sq:     # 웨이퍼 원 밖 격자 위치 -> die 없음
                 continue
 
-            x_a = cx_d - die_w // 2
-            y_a = cy_d - die_h // 2
-            x_b = x_a + die_w
-            y_b = y_a + die_h
+            if clip_partial_edge and _rect_crosses_circle(
+                    x_a, y_a, x_b, y_b, wafer_cx, wafer_cy, int(round(r_lim))):
+                continue
+
+            cell_w = x_b - x_a
+            cell_h = y_b - y_a
 
             # offset/margin 적용된 실제 crop 영역 (margin=offset=0 이면 rect_px 와 동일)
-            crop_rect = _crop_rect(cx_d, cy_d, die_w, die_h,
+            crop_rect = _crop_rect(cx_d, cy_d, cell_w, cell_h,
                                    offset_x, offset_y, margin_x, margin_y)
 
             rx = (cx_d - wafer_cx) / pixel_per_unit
@@ -2115,13 +2147,13 @@ def build_die_map(image: Union[str, Path, np.ndarray],
                 "real_coord":  (rx, ry),
                 # ★ 두 가지 edge 플래그를 모두 저장 (is_edge 는 아래서 edge_mode 로 결정)
                 "is_edge_partial": _rect_crosses_circle(x_a, y_a, x_b, y_b,
-                                                        wafer_cx, wafer_cy, wafer_r),
+                                                        wafer_cx, wafer_cy, int(round(r_lim))),
                 "is_edge_ring": False,   # 8방향 이웃 확정 후 채움
                 "is_edge":      False,   # edge_mode 적용 후 채움
             }
 
             if with_crops:
-                crop = crop_die(img, cx_d, cy_d, die_w, die_h,
+                crop = crop_die(img, cx_d, cy_d, cell_w, cell_h,
                                 offset_x=offset_x, offset_y=offset_y,
                                 margin_x=margin_x, margin_y=margin_y,
                                 border_mode=border_mode)
