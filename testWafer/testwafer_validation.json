@@ -1,0 +1,59 @@
+{
+  "test_scope": "testWafer folder only",
+  "results": [
+    {
+      "image": "wafer_1_3000_gray.png",
+      "overlay": "wafer_1_3000_gray_overlay.png",
+      "num_dies": 880,
+      "edge_dies": 130,
+      "pitch_x_px": 90.0,
+      "pitch_y_px": 78.0,
+      "grid_origin_px": [
+        1462,
+        1520
+      ],
+      "grid_origin_shift_px": [
+        -1,
+        0
+      ],
+      "wafer_center_px": [
+        1500,
+        1500
+      ],
+      "wafer_radius_px": 1411,
+      "edge_clip_margin_px": 8,
+      "horizontal_street_contrast": 26.102
+    },
+    {
+      "image": "wafer_1_horizontal_street_3000.png",
+      "overlay": "wafer_1_horizontal_street_3000_overlay.png",
+      "num_dies": 886,
+      "edge_dies": 130,
+      "pitch_x_px": 90.0,
+      "pitch_y_px": 78.0,
+      "grid_origin_px": [
+        1462,
+        1520
+      ],
+      "grid_origin_shift_px": [
+        -1,
+        0
+      ],
+      "wafer_center_px": [
+        1501,
+        1497
+      ],
+      "wafer_radius_px": 1416,
+      "edge_clip_margin_px": 8,
+      "horizontal_street_contrast": 52.102
+    }
+  ],
+  "pitch_y_difference_px": 0.0,
+  "horizontal_contrast_gain": 26.0,
+  "checks": {
+    "both_images_detected": true,
+    "horizontal_pitch_stable": true,
+    "horizontal_street_is_clearer": true
+  },
+  "all_checks_passed": true
+}
