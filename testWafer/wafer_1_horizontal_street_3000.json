@@ -1,0 +1,10 @@
+{
+  "source": "wafer_1.jpg",
+  "reference": "wafer_1_3000_gray.png",
+  "horizontal_pattern": "wafer_1_horizontal_street_3000.png",
+  "size_px": 3000,
+  "estimated_horizontal_pitch_px": 78.0,
+  "estimated_horizontal_phase_px": 38.0,
+  "street_band_half_width_px": 2.1,
+  "street_brightness_boost": 46
+}
