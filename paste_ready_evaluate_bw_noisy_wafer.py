@@ -98,7 +98,8 @@ __all__ = ["WaferDieMap", "build_die_map", "locate_die", "crop_die",
            "measure_horizontal_line_angle", "measure_axis_line_angle",
            "validate_quadrant_edges",
            "render_die_grid_mask", "measure_die_render_angle",
-           "align_wafer_by_die_render", "measure_wafer_angle_robust"]
+           "align_wafer_by_die_render", "measure_wafer_angle_robust",
+           "inspect_edge_particles", "render_edge_particle_overlay"]
 
 
 # #############################################################################
@@ -2457,6 +2458,156 @@ def render_overlay_portable(image_path: Union[str, Path], die_map: WaferDieMap,
     if not ok:
         raise RuntimeError(f"failed to write overlay: {overlay_path}")
     return overlay_path
+
+
+def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
+                           die_map: Optional[WaferDieMap] = None,
+                           grid_method: str = "std",
+                           notch_align: bool = False,
+                           edge_inner_margin_px: int = 75,
+                           edge_outer_margin_px: int = 10,
+                           ring_guard_px: int = 2,
+                           die_exclusion_margin_px: int = 2,
+                           white_threshold: int = 220,
+                           min_area_px: int = 20,
+                           max_area_px: int = 300,
+                           max_aspect_ratio: float = 2.5,
+                           min_fill_ratio: float = 0.45,
+                           min_local_contrast: float = 45.0
+                           ) -> Dict[str, Any]:
+    """Detect compact bright particles only in an adjustable wafer-edge ring.
+
+    The annulus is measured inward from the detected wafer circle.  Every die
+    cell, including partial edge cells, is masked before thresholding so bright
+    circuit patterns inside a die cannot become particle candidates.
+    """
+    if edge_inner_margin_px <= edge_outer_margin_px:
+        raise ValueError("edge_inner_margin_px must be larger than edge_outer_margin_px")
+    if ring_guard_px < 0 or die_exclusion_margin_px < 0:
+        raise ValueError("ring_guard_px and die_exclusion_margin_px must be >= 0")
+    if min_area_px <= 0 or max_area_px < min_area_px:
+        raise ValueError("area limits must satisfy 0 < min_area_px <= max_area_px")
+    if not 0.0 < max_aspect_ratio:
+        raise ValueError("max_aspect_ratio must be > 0")
+
+    bgr = _load_bgr(image)
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    if die_map is None or not any(bool(die["is_edge_partial"]) for die in die_map.dies):
+        # Keep partial cells in this private map because they must be excluded
+        # from particle inspection even though normal die output clips them.
+        die_map = build_die_map(
+            image,
+            grid_method=grid_method,
+            notch_align=notch_align,
+            clip_partial_edge=False,
+            edge_clip_margin_px=0,
+            edge_mode="both",
+        )
+
+    height, width = gray.shape
+    yy, xx = np.ogrid[:height, :width]
+    radius = np.hypot(xx - die_map.wafer_cx, yy - die_map.wafer_cy)
+    inner_radius = float(die_map.wafer_r - edge_inner_margin_px + ring_guard_px)
+    outer_radius = float(die_map.wafer_r - edge_outer_margin_px - ring_guard_px)
+    if inner_radius <= 0 or outer_radius <= inner_radius:
+        raise ValueError("edge ring parameters leave no inspection area")
+    ring_mask = ((radius >= inner_radius) & (radius <= outer_radius)).astype(np.uint8)
+
+    die_mask = np.zeros((height, width), dtype=np.uint8)
+    for die in die_map.dies:
+        x1, y1, x2, y2 = die["rect_px"]
+        cv2.rectangle(
+            die_mask,
+            (max(0, x1 - die_exclusion_margin_px), max(0, y1 - die_exclusion_margin_px)),
+            (min(width - 1, x2 + die_exclusion_margin_px),
+             min(height - 1, y2 + die_exclusion_margin_px)),
+            255,
+            -1,
+        )
+
+    inspection_mask = ((ring_mask > 0) & (die_mask == 0)).astype(np.uint8)
+    bright_mask = ((gray >= int(white_threshold)) & (inspection_mask > 0)).astype(np.uint8)
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bright_mask, 8)
+
+    particles: List[Dict[str, Any]] = []
+    for label in range(1, num_labels):
+        x, y, box_w, box_h, area = (int(value) for value in stats[label])
+        if not min_area_px <= area <= max_area_px:
+            continue
+        aspect_ratio = max(box_w, box_h) / max(1.0, min(box_w, box_h))
+        fill_ratio = area / float(max(1, box_w * box_h))
+        if aspect_ratio > max_aspect_ratio or fill_ratio < min_fill_ratio:
+            continue
+
+        component_mask = labels[y:y + box_h, x:x + box_w] == label
+        mean_intensity = float(gray[y:y + box_h, x:x + box_w][component_mask].mean())
+        pad = 3
+        rx1, ry1 = max(0, x - pad), max(0, y - pad)
+        rx2, ry2 = min(width, x + box_w + pad), min(height, y + box_h + pad)
+        local_component = labels[ry1:ry2, rx1:rx2] == label
+        local_background = inspection_mask[ry1:ry2, rx1:rx2].astype(bool) & ~local_component
+        if int(local_background.sum()) < 8:
+            continue
+        local_contrast = mean_intensity - float(np.median(gray[ry1:ry2, rx1:rx2][local_background]))
+        if local_contrast < min_local_contrast:
+            continue
+
+        cx, cy = (float(value) for value in centroids[label])
+        particles.append({
+            "id": len(particles) + 1,
+            "center_px": (round(cx, 2), round(cy, 2)),
+            "bbox_px": (x, y, x + box_w, y + box_h),
+            "area_px": area,
+            "aspect_ratio": round(aspect_ratio, 3),
+            "fill_ratio": round(fill_ratio, 3),
+            "mean_intensity": round(mean_intensity, 2),
+            "local_contrast": round(local_contrast, 2),
+            "radius_from_wafer_center_px": round(float(np.hypot(cx - die_map.wafer_cx, cy - die_map.wafer_cy)), 2),
+        })
+
+    return {
+        "die_map": die_map,
+        "particles": particles,
+        "ring_mask": ring_mask,
+        "die_exclusion_mask": die_mask,
+        "inspection_mask": inspection_mask,
+        "bright_mask": bright_mask,
+        "parameters": {
+            "edge_inner_margin_px": edge_inner_margin_px,
+            "edge_outer_margin_px": edge_outer_margin_px,
+            "ring_guard_px": ring_guard_px,
+            "die_exclusion_margin_px": die_exclusion_margin_px,
+            "white_threshold": white_threshold,
+            "min_area_px": min_area_px,
+            "max_area_px": max_area_px,
+            "max_aspect_ratio": max_aspect_ratio,
+            "min_fill_ratio": min_fill_ratio,
+            "min_local_contrast": min_local_contrast,
+        },
+        "inspection_radii_px": {
+            "inner": round(inner_radius, 2),
+            "outer": round(outer_radius, 2),
+        },
+    }
+
+
+def render_edge_particle_overlay(image: Union[str, Path, np.ndarray],
+                                 inspection: Dict[str, Any]) -> np.ndarray:
+    """Render the adjustable edge ring and accepted particle candidates."""
+    canvas = _load_bgr(image).copy()
+    die_map = inspection["die_map"]
+    inner_radius = int(round(inspection["inspection_radii_px"]["inner"]))
+    outer_radius = int(round(inspection["inspection_radii_px"]["outer"]))
+    cv2.circle(canvas, (die_map.wafer_cx, die_map.wafer_cy), inner_radius, (255, 190, 0), 1)
+    cv2.circle(canvas, (die_map.wafer_cx, die_map.wafer_cy), outer_radius, (255, 190, 0), 1)
+    for particle in inspection["particles"]:
+        x1, y1, x2, y2 = particle["bbox_px"]
+        center = tuple(int(round(value)) for value in particle["center_px"])
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), (0, 0, 255), 1)
+        cv2.drawMarker(canvas, center, (0, 0, 255), cv2.MARKER_CROSS, 10, 1)
+        cv2.putText(canvas, str(particle["id"]), (x1, max(12, y1 - 3)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 1, cv2.LINE_AA)
+    return canvas
 
 
 def evaluate_bw_noisy_wafer(image_path: Union[str, Path],
