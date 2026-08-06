@@ -12,6 +12,9 @@
 | 파일 | 설명 |
 |------|------|
 | `wafer_die_map_v5.py` | 메인 코드(단일 파일) |
+| `use_manual_grid_wafer_map.py` | 수동 float grid corner/pitch 입력 전용 단일 파일. wafer 중심만 이미지에서 검출한다. |
+| `MANUAL_GRID_WAFER_MAP_KO.md` | 수동 grid 입력 좌표 규칙 및 호출 가이드 |
+| `evaluate_manual_grid_wafer_map.py` | 수동 float grid 입력 회귀 검사 스크립트 |
 | `LOGIC_SPEC.html` | 로직 시각 설명서(브라우저로 열기) — 왜 이렇게 했나 |
 | `LOGIC_SPEC.md` | 로직 텍스트 설명서 |
 | `make_real_test_images.py` | Wikimedia Commons 실제 die/wafer 소스로 테스트 이미지 재생성 |
