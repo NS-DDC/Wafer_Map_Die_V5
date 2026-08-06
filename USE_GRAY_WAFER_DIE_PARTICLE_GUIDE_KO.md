@@ -37,6 +37,8 @@ die_map = build_die_map(
     grid_method="std",
     notch_align=False,
     clip_partial_edge=True,
+    edge_clip_margin_px=8,
+    edge_index_margin_px=20,
     edge_mode="both",
 )
 
@@ -48,6 +50,11 @@ print(die_map.wafer_cx, die_map.wafer_cy, die_map.wafer_r)
 found = locate_die(die_map, point=(600, 500))
 # found = locate_die(die_map, bbox=(580, 480, 620, 520))
 print(found["die_index"], found["die_center_px"], found["is_edge"])
+
+# 현재 is_edge 기준으로 선택된 edge index와 원인별 index를 바로 받습니다.
+print(die_map.edge_indices)
+print(die_map.edge_index_report["ring"])
+print(die_map.edge_index_report["margin"])
 ```
 
 ### `build_die_map()` 주요 파라미터
@@ -61,7 +68,8 @@ print(found["die_index"], found["die_center_px"], found["is_edge"])
 | `angle_align_method` | `"die_render"` | `die_render`, `notch`, `vertical_line`, `none` 중 선택한다. |
 | `clip_partial_edge` | `True` | wafer 외곽에 걸친 die를 map에서 제거한다. |
 | `edge_clip_margin_px` | 자동 | partial 판정 safety margin. `-1`이면 작은 pitch의 10%를 사용한다. |
-| `edge_mode` | `"both"` | `circle`은 partial die, `ring`은 grid 최외곽, `both`는 둘 중 하나를 edge로 표시한다. `clip_partial_edge=True`라면 `circle`만 사용할 때 edge가 0개인 것이 정상이다. |
+| `edge_index_margin_px` | `0` | 포함된 완전 die 중 안전 원 경계에서 안쪽으로 이 폭만큼을 `is_edge_margin=True`로 표기한다. |
+| `edge_mode` | `"both"` | `circle`은 partial die, `ring`은 grid 최외곽, `margin`은 지정 band, `both`는 세 기준 중 하나를 edge로 표시한다. `clip_partial_edge=True`라면 `circle`만 사용할 때 edge가 0개인 것이 정상이다. |
 | `with_crops` | `False` | `True`면 각 die 항목에 crop 이미지를 함께 넣는다. |
 | `offset_x`, `offset_y` | `0` | die crop 중심을 이동한다. |
 | `margin_x`, `margin_y` | `0` | die crop을 사방으로 확장한다. |
@@ -80,8 +88,16 @@ print(found["die_index"], found["die_center_px"], found["is_edge"])
 | `notch_center_px` | notch 중심점, 찾지 못하면 `None` |
 | `angle_verified` | notch/grid 교차 검증 성공 여부 |
 | `quadrant_report` | 4분면 edge coverage 검증 정보 |
+| `edge_indices` | 현재 `edge_mode` 기준으로 선택된 `(ix, iy)` 목록 |
+| `edge_index_report` | `selected`, `partial`, `ring`, `margin` 원인별 `(ix, iy)` 목록 |
 
-각 `die` 항목에는 `index`, `center_px`, `rect_px`, `crop_rect_px`, `real_coord`, `is_edge_partial`, `is_edge_ring`, `is_edge`가 들어간다.
+각 `die` 항목에는 `index`, `center_px`, `rect_px`, `crop_rect_px`, `real_coord`, `is_edge_partial`, `is_edge_ring`, `edge_distance_px`, `is_edge_margin`, `is_edge`가 들어간다.
+
+### Edge margin 동작
+
+`edge_clip_margin_px`와 `edge_index_margin_px`는 역할이 다르다. 먼저 유효 원 반지름을 `wafer_r * edge_margin - edge_clip_margin_px`로 만든다. `clip_partial_edge=True`이면 이 유효 원을 조금이라도 넘는 die는 map에서 제거된다. 이후 남은 die마다 가장 먼 모서리와 유효 원 사이의 거리 `edge_distance_px`를 계산한다. 그 값이 `0 <= 거리 <= edge_index_margin_px`이면 `is_edge_margin=True`이다.
+
+예를 들어 `edge_clip_margin_px=8`, `edge_index_margin_px=20`이면 실제 wafer rim에서 8px 안전 여유를 두고 부분 die를 제거한 뒤, 그 안전 원에서 다시 20px 안쪽까지의 완전 die를 margin edge로 분류한다. particle ring ROI와는 별개의 die index 분류다.
 
 ## 2. Wafer Ring ROI Particle 검사
 

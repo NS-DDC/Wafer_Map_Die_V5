@@ -8,11 +8,11 @@
    그린 '이상적 격자 템플릿'에, 실제 sawline 엣지를 회전 정합시켜 기울기를 찾는다.
    실제 sawline 모양이 굵기 3 사각 테두리와 일치하므로, 모든 die·양축(가로/세로)을
    한꺼번에 이용해 가장 안정적으로 각도를 잡는다(2-pass: 대략검출→정합→재검출).
- · EDGE 구분 강화 : 각 die 에 두 가지 edge 플래그를 모두 부여(둘 다 선택 가능).
+ · EDGE 구분 강화 : 각 die 에 partial/ring/margin 세 edge 플래그를 부여(선택 가능).
      - is_edge_partial : die 사각형이 wafer 원 밖으로 일부라도 나간 '부분 die'.
      - is_edge_ring    : die 격자에서 8방향 이웃이 다 차 있지 않은 '최외곽 줄'.
    build_die_map(edge_mode="circle"|"ring"|"both") 로 is_edge 가 무엇을 가리킬지 선택.
-   locate_die 결과에 is_edge(+ is_edge_partial / is_edge_ring)가 함께 반환된다.
+   locate_die 결과에 is_edge와 partial/ring/margin 상세 플래그가 함께 반환된다.
 
 [기능] (기존 wafer_die_map.py 대비)
  1. Notch 중심점 반환 : wafer '아래쪽'의 파인 곳(notch)만 탐색하고, 그 파임의
@@ -691,7 +691,8 @@ DEFAULT_EDGE_MARGIN = 1.0        # die 포함 기준: 중심거리 <= r * 이값
 # --- EDGE die 판정 방식 (둘 다 계산되어 entry 에 저장; is_edge 가 무엇을 가리킬지 선택) ---
 #   "circle" : is_edge = is_edge_partial (die 사각형이 wafer 원 밖으로 일부라도 나감)
 #   "ring"   : is_edge = is_edge_ring    (die 격자에서 8방향 이웃이 다 차 있지 않은 최외곽)
-#   "both"   : is_edge = is_edge_partial OR is_edge_ring
+#   "margin" : is_edge = is_edge_margin  (effective edge circle 안쪽의 지정 폭)
+#   "both"   : is_edge = is_edge_partial OR is_edge_ring OR is_edge_margin
 # clip_partial_edge=True이면 partial die는 결과 map에서 제거되므로 "circle"만 쓰면
 # is_edge가 0개가 될 수 있다. 기본 "both"는 남아 있는 최외곽 die(is_edge_ring)를
 # 항상 edge로 표시하면서, partial die를 남기는 설정에서는 circle edge도 함께 표시한다.
@@ -779,7 +780,9 @@ class WaferDieMap:
       "real_coord":  (rx, ry),           # die 중심 기준 실측 좌표
       "is_edge_partial": bool,           # 정의① die 사각형이 wafer 원 밖으로 일부라도 나감
       "is_edge_ring":    bool,           # 정의② 격자에서 8방향 이웃이 다 차 있지 않은 최외곽
-      "is_edge":     bool,               # edge_mode 가 가리키는 값(circle→partial / ring→ring / both→OR)
+      "edge_distance_px": float,         # effective edge circle에서 die 바깥 모서리까지 남은 거리
+      "is_edge_margin": bool,            # 정의③ edge_index_margin_px 안쪽 band에 포함됨
+      "is_edge":     bool,               # edge_mode 가 가리키는 값(circle/ring/margin/both)
       "image":       np.ndarray,         # with_crops=True 일 때만 (crop_rect_px 영역)
     }
     """
@@ -806,7 +809,10 @@ class WaferDieMap:
     die_grid_angle_resid: float = 0.0   # [기능2] 보정 후 die 격자 잔여 기울기(deg)
     angle_verified: bool = False        # [기능2] notch 각도와 die 격자 각도 일치 여부
     quadrant_report: Dict[str, Any] = field(default_factory=dict)  # [기능3] 4분면 검증 결과
-    edge_mode: str = DEFAULT_EDGE_MODE  # [V5] is_edge 가 가리키는 기준(circle|ring|both)
+    edge_mode: str = DEFAULT_EDGE_MODE  # [V5] is_edge 가 가리키는 기준(circle|ring|margin|both)
+    edge_clip_margin_px: int = 0        # map 포함 원을 실제 wafer 원에서 안쪽으로 줄인 안전 여유(px)
+    edge_index_margin_px: int = 0       # 포함된 die 중 edge로 추가 표기할 안쪽 band 폭(px)
+    edge_limit_r: float = 0.0           # 위 clip을 적용한 실제 die 포함/edge 판정 반지름(px)
     angle_confidence: float = 1.0  # [V5 고도화] 각도 신뢰도 0~1 (projection·FFT 합의 기반)
     angle_agree: bool = True        # [V5 고도화] projection 과 FFT 가 합의했는지
 
@@ -817,6 +823,21 @@ class WaferDieMap:
     @property
     def num_dies(self) -> int:
         return len(self.dies)
+
+    @property
+    def edge_indices(self) -> List[Tuple[int, int]]:
+        """현재 edge_mode 기준의 edge die 격자 인덱스 `(ix, iy)` 목록."""
+        return [tuple(die["index"]) for die in self.dies if bool(die.get("is_edge"))]
+
+    @property
+    def edge_index_report(self) -> Dict[str, List[Tuple[int, int]]]:
+        """partial/ring/margin/selected 기준별 edge die 인덱스 목록."""
+        return {
+            "selected": self.edge_indices,
+            "partial": [tuple(die["index"]) for die in self.dies if bool(die.get("is_edge_partial"))],
+            "ring": [tuple(die["index"]) for die in self.dies if bool(die.get("is_edge_ring"))],
+            "margin": [tuple(die["index"]) for die in self.dies if bool(die.get("is_edge_margin"))],
+        }
 
 
 def _rect_crosses_circle(x1: int, y1: int, x2: int, y2: int,
@@ -829,25 +850,38 @@ def _rect_crosses_circle(x1: int, y1: int, x2: int, y2: int,
     return False
 
 
+def _rect_circle_clearance(x1: int, y1: int, x2: int, y2: int,
+                           cx: int, cy: int, r: float) -> float:
+    """Return clearance from the farthest die corner to the effective edge circle."""
+    farthest = max(math.hypot(px - cx, py - cy)
+                   for px, py in ((x1, y1), (x2, y1), (x1, y2), (x2, y2)))
+    return float(r - farthest)
+
+
 def _normalize_edge_mode(edge_mode: str) -> str:
-    """edge_mode 문자열 정규화 -> "circle" | "ring" | "both"."""
+    """edge_mode 문자열 정규화 -> "circle" | "ring" | "margin" | "both"."""
     m = str(edge_mode).lower().strip()
     if m in ("circle", "partial", "disc", "crop", "1"):
         return "circle"
     if m in ("ring", "neighbor", "outer", "outermost", "grid", "2"):
         return "ring"
+    if m in ("margin", "band", "distance", "3"):
+        return "margin"
     if m in ("both", "or", "all", "union"):
         return "both"
-    raise ValueError("edge_mode must be 'circle', 'ring', or 'both'.")
+    raise ValueError("edge_mode must be 'circle', 'ring', 'margin', or 'both'.")
 
 
-def _resolve_edge_flag(is_partial: bool, is_ring: bool, edge_mode: str) -> bool:
+def _resolve_edge_flag(is_partial: bool, is_ring: bool, is_margin: bool,
+                       edge_mode: str) -> bool:
     """edge_mode 에 따라 is_edge 가 가리킬 값 결정 (mode 는 정규화된 값)."""
     if edge_mode == "circle":
         return bool(is_partial)
     if edge_mode == "ring":
         return bool(is_ring)
-    return bool(is_partial or is_ring)   # "both"
+    if edge_mode == "margin":
+        return bool(is_margin)
+    return bool(is_partial or is_ring or is_margin)   # "both"
 
 
 def _load_bgr(image: Union[str, Path, np.ndarray]) -> np.ndarray:
@@ -2015,6 +2049,8 @@ def build_die_map(image: Union[str, Path, np.ndarray],
                   pixel_per_unit: int = DEFAULT_PIXEL_PER_UNIT,
                   include_edge: bool = True,
                   edge_margin: float = DEFAULT_EDGE_MARGIN,
+                  edge_clip_margin_px: int = 0,
+                  edge_index_margin_px: int = 0,
                   die_template_path: Optional[str] = None,
                   with_crops: bool = False,
                   border_mode: str = "pad",
@@ -2055,7 +2091,7 @@ def build_die_map(image: Union[str, Path, np.ndarray],
     notch_ref_deg    : notch 의 정상 위치 (90 = 아래쪽/6시 방향).
     angle_align_method: "die_render"(V5 기본) | "notch" | "vertical_line" | "none".
     edge_mode        : ★ EDGE 판정 기준. "circle"(부분 die) | "ring"(격자 최외곽) | "both"(기본).
-                       각 die 에는 is_edge_partial / is_edge_ring 가 모두 저장되고,
+                       각 die 에는 is_edge_partial / is_edge_ring / is_edge_margin 가 모두 저장되고,
                        is_edge 는 edge_mode 가 가리키는 값이 된다.
     clean            : ★[기능4] True 면 시작 시 wafer 원판 밖을 검정으로(외부노이즈 제거).
     notch_sector_deg : ★[기능1] notch 를 아래쪽 ref±이 각도에서만 탐색.
@@ -2142,7 +2178,10 @@ def build_die_map(image: Union[str, Path, np.ndarray],
     max_ix = int(np.ceil(wafer_r / pitch_x)) + 2
     max_iy = int(np.ceil(wafer_r / pitch_y)) + 2
     margin = edge_margin if include_edge else 0.98
-    r_lim_sq = (wafer_r * margin) ** 2
+    edge_clip_margin_px = max(0, int(edge_clip_margin_px))
+    edge_index_margin_px = max(0, int(edge_index_margin_px))
+    r_lim = max(0.0, wafer_r * margin - float(edge_clip_margin_px))
+    r_lim_sq = r_lim ** 2
 
     dies: List[Dict[str, Any]] = []
     dies_by_index: Dict[Tuple[int, int], Dict[str, Any]] = {}
@@ -2168,6 +2207,8 @@ def build_die_map(image: Union[str, Path, np.ndarray],
 
             rx = (cx_d - wafer_cx) / pixel_per_unit
             ry = (wafer_cy - cy_d) / pixel_per_unit
+            edge_distance_px = _rect_circle_clearance(
+                x_a, y_a, x_b, y_b, wafer_cx, wafer_cy, r_lim)
 
             entry: Dict[str, Any] = {
                 "index":       (ix, iy),
@@ -2175,10 +2216,11 @@ def build_die_map(image: Union[str, Path, np.ndarray],
                 "rect_px":     (x_a, y_a, x_b, y_b),
                 "crop_rect_px": crop_rect,
                 "real_coord":  (rx, ry),
-                # ★ 두 가지 edge 플래그를 모두 저장 (is_edge 는 아래서 edge_mode 로 결정)
-                "is_edge_partial": _rect_crosses_circle(x_a, y_a, x_b, y_b,
-                                                        wafer_cx, wafer_cy, wafer_r),
+                # 세 edge 기준을 모두 저장. is_edge는 아래서 edge_mode에 따라 선택한다.
+                "is_edge_partial": edge_distance_px < 0.0,
                 "is_edge_ring": False,   # 8방향 이웃 확정 후 채움
+                "edge_distance_px": round(edge_distance_px, 2),
+                "is_edge_margin": bool(0.0 <= edge_distance_px <= edge_index_margin_px),
                 "is_edge":      False,   # edge_mode 적용 후 채움
             }
 
@@ -2203,7 +2245,8 @@ def build_die_map(image: Union[str, Path, np.ndarray],
                    for dxn in (-1, 0, 1) for dyn in (-1, 0, 1)
                    if not (dxn == 0 and dyn == 0))
         d["is_edge_ring"] = bool(ring)
-        d["is_edge"] = _resolve_edge_flag(d["is_edge_partial"], d["is_edge_ring"], emode)
+        d["is_edge"] = _resolve_edge_flag(
+            d["is_edge_partial"], d["is_edge_ring"], d["is_edge_margin"], emode)
 
     # 4) ★[기능3] 4분면 가장자리 맵 검증
     quadrant_report = validate_quadrant_edges(dies, wafer_cx, wafer_cy, wafer_r)
@@ -2221,6 +2264,9 @@ def build_die_map(image: Union[str, Path, np.ndarray],
         angle_confidence=angle_confidence,       # ★[V5 고도화] 각도 신뢰도(0~1)
         angle_agree=angle_agree,                 # ★[V5 고도화] projection↔FFT 합의 여부
         edge_mode=emode,                         # ★[V5] is_edge 기준
+        edge_clip_margin_px=edge_clip_margin_px,
+        edge_index_margin_px=edge_index_margin_px,
+        edge_limit_r=r_lim,
         quadrant_report=quadrant_report,         # ★[기능3]
     )
 
@@ -2263,7 +2309,9 @@ def locate_die(die_map: WaferDieMap,
           "is_edge"      : bool,               # edge_mode 가 가리키는 edge 여부
           "is_edge_partial": bool,             # 정의① die 가 wafer 원 밖으로 일부 나감
           "is_edge_ring" : bool,               # 정의② 격자 최외곽(8방향 이웃 결손)
-          "edge_mode"    : str,                # 이 맵의 is_edge 기준(circle|ring|both)
+          "edge_distance_px": float,           # effective edge circle에서 die 모서리까지 남은 거리
+          "is_edge_margin": bool,              # 지정한 edge band 포함 여부
+          "edge_mode"    : str,                # 이 맵의 is_edge 기준(circle|ring|margin|both)
           "in_wafer"     : bool,               # query 점이 웨이퍼 원 안인지
         }
 
@@ -2322,16 +2370,22 @@ def locate_die(die_map: WaferDieMap,
         is_edge_partial = bool(entry.get("is_edge_partial",
                                          entry.get("is_edge", False)))
         is_edge_ring = bool(entry.get("is_edge_ring", False))
+        is_edge_margin = bool(entry.get("is_edge_margin", False))
+        edge_distance_px = float(entry.get("edge_distance_px", 0.0))
     else:
         # 맵에 없는(웨이퍼 밖 등) 위치 -> 즉석 계산
-        is_edge_partial = _rect_crosses_circle(
+        edge_limit_r = float(getattr(die_map, "edge_limit_r", 0.0) or die_map.wafer_r)
+        edge_distance_px = _rect_circle_clearance(
             x_a, y_a, x_b, y_b,
-            die_map.wafer_cx, die_map.wafer_cy, die_map.wafer_r)
+            die_map.wafer_cx, die_map.wafer_cy, edge_limit_r)
+        is_edge_partial = edge_distance_px < 0.0
+        edge_index_margin_px = int(getattr(die_map, "edge_index_margin_px", 0))
+        is_edge_margin = bool(0.0 <= edge_distance_px <= edge_index_margin_px)
         is_edge_ring = any(
             (ix + dxn, iy + dyn) not in die_map.dies_by_index
             for dxn in (-1, 0, 1) for dyn in (-1, 0, 1)
             if not (dxn == 0 and dyn == 0))
-    is_edge = _resolve_edge_flag(is_edge_partial, is_edge_ring, emode)
+    is_edge = _resolve_edge_flag(is_edge_partial, is_edge_ring, is_edge_margin, emode)
     in_wafer = ((qx - die_map.wafer_cx) ** 2 + (qy - die_map.wafer_cy) ** 2
                 <= die_map.wafer_r ** 2)
 
@@ -2350,6 +2404,8 @@ def locate_die(die_map: WaferDieMap,
         "is_edge":       is_edge,             # edge_mode 가 가리키는 값
         "is_edge_partial": is_edge_partial,   # 정의① 부분 die(원 밖으로 나감)
         "is_edge_ring":  is_edge_ring,        # 정의② 격자 최외곽(이웃 결손)
+        "edge_distance_px": round(edge_distance_px, 2),
+        "is_edge_margin": is_edge_margin,     # 정의③ 안전 원에서 안쪽 edge band
         "edge_mode":     emode,               # 이 맵의 is_edge 기준
         "in_wafer":      bool(in_wafer),
     }
