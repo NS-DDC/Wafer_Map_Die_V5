@@ -8,15 +8,16 @@
 
 ## 호출 방식
 
-함수에는 경로가 아니라 1채널 OpenCV 배열을 넣는다.
+기존 방식대로 먼저 `dm`을 만들고, particle 함수에는 `dm`을 넣는다. `dm.aligned_image`를 기준으로 검사하므로 회전 보정 뒤에도 die 좌표와 particle 좌표가 일치한다.
 
 ```python
 import cv2
-from use_gray_wafer_die_particle import inspect_edge_particles
+from use_gray_wafer_die_particle import build_die_map, inspect_edge_particles
 
 image = cv2.imread("Gray_Wafer/2222.png", cv2.IMREAD_GRAYSCALE)
+dm = build_die_map(image, grid_method="std", notch_align=False, edge_mode="both")
 result = inspect_edge_particles(
-    image,
+    dm,
     edge_inner_margin_px=75,
     edge_outer_margin_px=10,
     ring_guard_px=2,
@@ -47,8 +48,8 @@ particles = result["particles"]
 
 ## 로직
 
-1. Gray 1채널 입력을 BGR로 정규화하고 wafer 중심과 grid를 검출한다.
-2. particle 검사 전용 map은 `clip_partial_edge=False`로 다시 생성해, edge에 걸친 die까지 mask로 만든다.
+1. Gray 1채널 입력으로 `dm = build_die_map(image, ...)`을 만들고, `dm.aligned_image`에서 검사한다.
+2. `dm.dies`가 partial die를 제외했더라도 `dm`의 float grid를 이용해 edge에 걸친 die까지 mask로 다시 만든다.
 3. 두 개의 원으로 만든 외곽 ring과 die mask 밖의 교집합만 검사한다.
 4. 밝기 threshold 후 연결 성분을 만들고 면적, 가로세로 비율, 채움률, 주변 대비를 적용한다.
 5. 통과한 component만 `particles` 목록에 `bbox_px`, `center_px`, 면적과 대비 정보를 기록한다.

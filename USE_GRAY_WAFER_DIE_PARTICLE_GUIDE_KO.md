@@ -91,11 +91,10 @@ from use_gray_wafer_die_particle import (
 )
 
 image = cv2.imread("Gray_Wafer/2222.png", cv2.IMREAD_GRAYSCALE)
+dm = build_die_map(image, grid_method="std", notch_align=False, edge_mode="both")
 
 inspection = inspect_edge_particles(
-    image,
-    grid_method="std",
-    notch_align=False,
+    dm,
     edge_inner_margin_px=75,
     edge_outer_margin_px=10,
     ring_guard_px=2,
@@ -112,11 +111,13 @@ inspection = inspect_edge_particles(
 for particle in inspection["particles"]:
     print(particle["id"], particle["center_px"], particle["bbox_px"])
 
-debug_image = render_edge_particle_diagnostic_overlay(image, inspection)
+debug_image = render_edge_particle_diagnostic_overlay(dm, inspection)
 cv2.imwrite("edge_particle_debug.png", debug_image)
 ```
 
-Particle 검사는 흰색 전체를 검출하지 않는다. 먼저 wafer 외곽의 조절 가능한 annulus(ring)를 만들고, 그 안에서도 모든 die 사각형을 제외한다. 남은 영역의 밝은 blob만 면적, 가로세로 비, 채움 비율, 주변 대비 기준을 모두 통과해야 particle이 된다.
+Particle 검사는 흰색 전체를 검출하지 않는다. 기존 흐름처럼 먼저 `dm = build_die_map(image, ...)`을 만들고, 그 `dm`을 모든 particle 함수에 전달한다. 먼저 wafer 외곽의 조절 가능한 annulus(ring)를 만들고, 그 안에서도 partial die를 포함한 모든 die 사각형을 제외한다. 남은 영역의 밝은 blob만 면적, 가로세로 비, 채움 비율, 주변 대비 기준을 모두 통과해야 particle이 된다.
+
+이미지만 있고 `dm`을 아직 만들지 않은 경우에는 보조 함수 `inspect_edge_particles_from_image(image, ...)`를 사용할 수 있다. 일반 사용과 overlay 좌표 일관성을 위해서는 `dm` 방식이 권장된다.
 
 | 파라미터 | 의미 |
 | --- | --- |

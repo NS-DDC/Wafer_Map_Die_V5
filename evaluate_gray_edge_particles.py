@@ -45,7 +45,8 @@ def _synthetic_reference_check(image: np.ndarray) -> dict:
         raise FileNotFoundError(str(PARTICLE_REFERENCE))
     reference = cv2.resize(reference, (13, 11), interpolation=cv2.INTER_AREA)
 
-    probe = inspect_edge_particles(image, grid_method="std", notch_align=False, **EDGE_PARAMS)
+    probe_dm = build_die_map(image, grid_method="std", notch_align=False, edge_mode="both")
+    probe = inspect_edge_particles(probe_dm, **EDGE_PARAMS)
     valid = cv2.erode(probe["inspection_mask"], np.ones(reference.shape, dtype=np.uint8))
     locations = np.argwhere(valid > 0)
     if len(locations) == 0:
@@ -57,7 +58,8 @@ def _synthetic_reference_check(image: np.ndarray) -> dict:
     target = synthetic[y - half_h:y - half_h + reference.shape[0],
                        x - half_w:x - half_w + reference.shape[1]]
     target[:] = np.maximum(target, reference)
-    detected = inspect_edge_particles(synthetic, grid_method="std", notch_align=False, **EDGE_PARAMS)
+    synthetic_dm = build_die_map(synthetic, grid_method="std", notch_align=False, edge_mode="both")
+    detected = inspect_edge_particles(synthetic_dm, **EDGE_PARAMS)
     first = detected["particles"][0] if detected["particles"] else None
     return {
         "injected_center_px": [x, y],
@@ -77,13 +79,12 @@ def main() -> None:
             raise FileNotFoundError(name)
         die_map = build_die_map(image, grid_method="std", notch_align=False, edge_mode="both")
         inspection = inspect_edge_particles(
-            image, grid_method="std", notch_align=False,
-            include_debug_components=True, **EDGE_PARAMS)
+            die_map, include_debug_components=True, **EDGE_PARAMS)
         overlay_path = RESULT_DIR / f"{Path(name).stem}_edge_particles.png"
         diagnostic_path = RESULT_DIR / f"{Path(name).stem}_edge_particle_diagnostic.png"
-        if not cv2.imwrite(str(overlay_path), render_edge_particle_overlay(image, inspection)):
+        if not cv2.imwrite(str(overlay_path), render_edge_particle_overlay(die_map, inspection)):
             raise RuntimeError(f"Could not write: {overlay_path}")
-        if not cv2.imwrite(str(diagnostic_path), render_edge_particle_diagnostic_overlay(image, inspection)):
+        if not cv2.imwrite(str(diagnostic_path), render_edge_particle_diagnostic_overlay(die_map, inspection)):
             raise RuntimeError(f"Could not write: {diagnostic_path}")
         results.append({
             "image": name,

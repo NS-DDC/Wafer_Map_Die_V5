@@ -99,7 +99,8 @@ __all__ = ["WaferDieMap", "build_die_map", "locate_die", "crop_die",
            "validate_quadrant_edges",
            "render_die_grid_mask", "measure_die_render_angle",
            "align_wafer_by_die_render", "measure_wafer_angle_robust",
-           "inspect_edge_particles", "render_edge_particle_overlay",
+           "inspect_edge_particles", "inspect_edge_particles_from_image",
+           "render_edge_particle_overlay",
            "render_edge_particle_diagnostic_overlay"]
 
 
@@ -2495,10 +2496,45 @@ def render_overlay_portable(image_path: Union[str, Path], die_map: WaferDieMap,
     return overlay_path
 
 
-def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
-                           die_map: Optional[WaferDieMap] = None,
-                           grid_method: str = "std",
-                           notch_align: bool = False,
+def _make_die_exclusion_mask(dm: WaferDieMap, image_shape: Tuple[int, int],
+                             margin_px: int) -> np.ndarray:
+    """Create a mask for every theoretical die cell, including clipped edge cells.
+
+    `dm.dies` normally excludes partial edge die.  Particle inspection cannot
+    use that list directly because the bright contents of a clipped die would
+    become false particle candidates.  This helper recreates cells from the
+    same float grid stored in ``dm`` without re-detecting wafer/grid data.
+    """
+    height, width = image_shape
+    mask = np.zeros((height, width), dtype=np.uint8)
+    max_ix = int(np.ceil(dm.wafer_r / dm.pitch_x)) + 2
+    max_iy = int(np.ceil(dm.wafer_r / dm.pitch_y)) + 2
+    radius_sq = float(dm.wafer_r ** 2)
+
+    for iy in range(-max_iy, max_iy + 1):
+        for ix in range(-max_ix, max_ix + 1):
+            # Keep the same independent float-boundary calculation as build_die_map.
+            x1 = int(round(dm.x0 + ix * dm.pitch_x))
+            x2 = int(round(dm.x0 + (ix + 1) * dm.pitch_x))
+            y1 = int(round(dm.y0 - (iy + 1) * dm.pitch_y))
+            y2 = int(round(dm.y0 - iy * dm.pitch_y))
+            if x2 <= x1 or y2 <= y1:
+                continue
+            cx = (x1 + x2) / 2.0
+            cy = (y1 + y2) / 2.0
+            if (cx - dm.wafer_cx) ** 2 + (cy - dm.wafer_cy) ** 2 > radius_sq:
+                continue
+            cv2.rectangle(
+                mask,
+                (max(0, x1 - margin_px), max(0, y1 - margin_px)),
+                (min(width - 1, x2 + margin_px), min(height - 1, y2 + margin_px)),
+                255,
+                -1,
+            )
+    return mask
+
+
+def inspect_edge_particles(dm: WaferDieMap, *,
                            edge_inner_margin_px: int = 75,
                            edge_outer_margin_px: int = 10,
                            ring_guard_px: int = 2,
@@ -2518,6 +2554,9 @@ def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
     노이즈가 함께 증가할 수 있으므로, 반드시 diagnostic overlay의 D/R/P 표기로
     원인을 먼저 확인한다.
 
+    `dm = build_die_map(image, ...)`의 반환값을 넣는다. 검사 기준 이미지는
+    `dm.aligned_image`이며, 회전 보정 뒤의 die/grid 좌표와 같은 좌표계가 유지된다.
+
     partial edge die까지 포함한 모든 die cell을 threshold 이전에 mask한다. 따라서
     die 내부의 밝은 회로 패턴과 wafer edge에 걸친 die는 particle 후보가 될 수 없다.
     """
@@ -2530,45 +2569,29 @@ def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
     if not 0.0 < max_aspect_ratio:
         raise ValueError("max_aspect_ratio must be > 0")
 
-    bgr = _load_bgr(image)
+    if not isinstance(dm, WaferDieMap):
+        raise TypeError("inspect_edge_particles(dm, ...) requires a WaferDieMap from build_die_map()")
+    if dm.aligned_image is None:
+        raise ValueError("dm.aligned_image is required; create dm with build_die_map()")
+
+    bgr = _load_bgr(dm.aligned_image)
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    if die_map is None or not any(bool(die["is_edge_partial"]) for die in die_map.dies):
-        # 일반 map은 partial die를 제거하는 것이 기본이다. 하지만 particle 검사에서는
-        # 제거된 die 영역도 "검사 금지"로 남아 있어야 한다. 그래서 partial cell을 포함한
-        # private map을 별도 생성한다. 이 부분을 clip_partial_edge=True로 바꾸면 외곽 die의
-        # 밝은 회로선이 particle 후보로 새어 들어올 수 있다.
-        die_map = build_die_map(
-            image,
-            grid_method=grid_method,
-            notch_align=notch_align,
-            clip_partial_edge=False,
-            edge_clip_margin_px=0,
-            edge_mode="both",
-        )
 
     height, width = gray.shape
     yy, xx = np.ogrid[:height, :width]
-    radius = np.hypot(xx - die_map.wafer_cx, yy - die_map.wafer_cy)
+    radius = np.hypot(xx - dm.wafer_cx, yy - dm.wafer_cy)
     # margin은 wafer 원의 바깥쪽에서 안쪽으로 잰 거리다.
     # inner margin을 키우면 더 안쪽까지 검사하고, outer margin을 줄이면 rim에 더 가깝게 검사한다.
     # guard는 경계에 반쯤 걸친 blob을 불안정하게 분류하지 않도록 양 끝을 추가로 비운다.
-    inner_radius = float(die_map.wafer_r - edge_inner_margin_px + ring_guard_px)
-    outer_radius = float(die_map.wafer_r - edge_outer_margin_px - ring_guard_px)
+    inner_radius = float(dm.wafer_r - edge_inner_margin_px + ring_guard_px)
+    outer_radius = float(dm.wafer_r - edge_outer_margin_px - ring_guard_px)
     if inner_radius <= 0 or outer_radius <= inner_radius:
         raise ValueError("edge ring parameters leave no inspection area")
     ring_mask = ((radius >= inner_radius) & (radius <= outer_radius)).astype(np.uint8)
 
-    die_mask = np.zeros((height, width), dtype=np.uint8)
-    for die in die_map.dies:
-        x1, y1, x2, y2 = die["rect_px"]
-        cv2.rectangle(
-            die_mask,
-            (max(0, x1 - die_exclusion_margin_px), max(0, y1 - die_exclusion_margin_px)),
-            (min(width - 1, x2 + die_exclusion_margin_px),
-             min(height - 1, y2 + die_exclusion_margin_px)),
-            255,
-            -1,
-        )
+    # This uses dm's grid directly, but includes theoretical partial edge cells.
+    # Do not replace with `for die in dm.dies`: normal maps deliberately clip them.
+    die_mask = _make_die_exclusion_mask(dm, (height, width), die_exclusion_margin_px)
 
     # 최종 검사 가능 픽셀 = 외곽 ring AND 어떤 die에도 속하지 않는 픽셀.
     # die mask를 threshold보다 먼저 적용하는 순서가 die 내부 흰 패턴 오검출 방지의 핵심이다.
@@ -2639,7 +2662,7 @@ def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
             "fill_ratio": round(fill_ratio, 3),
             "mean_intensity": round(mean_intensity, 2),
             "local_contrast": round(local_contrast, 2),
-            "radius_from_wafer_center_px": round(float(np.hypot(cx - die_map.wafer_cx, cy - die_map.wafer_cy)), 2),
+            "radius_from_wafer_center_px": round(float(np.hypot(cx - dm.wafer_cx, cy - dm.wafer_cy)), 2),
         })
 
     die_bright_components: List[Dict[str, Any]] = []
@@ -2658,7 +2681,7 @@ def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
             })
 
     return {
-        "die_map": die_map,
+        "die_map": dm,
         "particles": particles,
         "ring_mask": ring_mask,
         "die_exclusion_mask": die_mask,
@@ -2696,11 +2719,32 @@ def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
     }
 
 
-def render_edge_particle_overlay(image: Union[str, Path, np.ndarray],
+def inspect_edge_particles_from_image(image: Union[str, Path, np.ndarray], *,
+                                      grid_method: str = "std",
+                                      notch_align: bool = False,
+                                      **particle_parameters: Any) -> Dict[str, Any]:
+    """이미지에서 바로 시작해야 할 때 쓰는 보조 함수.
+
+    주 사용 방식은 ``dm = build_die_map(image); inspect_edge_particles(dm)``이다.
+    기존처럼 이미지 한 장만 가진 상황에서는 이 함수를 사용한다. 함수명에
+    ``from_image``을 넣어 dm 기반 API와 혼동하지 않도록 구분했다.
+    """
+    dm = build_die_map(
+        image,
+        grid_method=grid_method,
+        notch_align=notch_align,
+        edge_mode="both",
+    )
+    return inspect_edge_particles(dm, **particle_parameters)
+
+
+def render_edge_particle_overlay(dm: WaferDieMap,
                                  inspection: Dict[str, Any]) -> np.ndarray:
-    """Render the adjustable edge ring and accepted particle candidates."""
-    canvas = _load_bgr(image).copy()
-    die_map = inspection["die_map"]
+    """`dm` 좌표계에서 검사 ring과 최종 particle을 그린다."""
+    if dm.aligned_image is None:
+        raise ValueError("dm.aligned_image is required; create dm with build_die_map()")
+    canvas = _load_bgr(dm.aligned_image).copy()
+    die_map = dm
     inner_radius = int(round(inspection["inspection_radii_px"]["inner"]))
     outer_radius = int(round(inspection["inspection_radii_px"]["outer"]))
     cv2.circle(canvas, (die_map.wafer_cx, die_map.wafer_cy), inner_radius, (255, 190, 0), 1)
@@ -2715,11 +2759,13 @@ def render_edge_particle_overlay(image: Union[str, Path, np.ndarray],
     return canvas
 
 
-def render_edge_particle_diagnostic_overlay(image: Union[str, Path, np.ndarray],
+def render_edge_particle_diagnostic_overlay(dm: WaferDieMap,
                                             inspection: Dict[str, Any],
                                             max_debug_components: int = 12) -> np.ndarray:
-    """Render inspection, die-excluded, rejected, and accepted particle areas."""
-    canvas = _load_bgr(image).copy()
+    """`dm` 좌표계에 검사/제외/탈락/통과 영역을 상세하게 그린다."""
+    if dm.aligned_image is None:
+        raise ValueError("dm.aligned_image is required; create dm with build_die_map()")
+    canvas = _load_bgr(dm.aligned_image).copy()
     ring = inspection["ring_mask"].astype(bool)
     die_in_ring = ring & inspection["die_exclusion_mask"].astype(bool)
     inspectable = inspection["inspection_mask"].astype(bool)
@@ -2734,7 +2780,7 @@ def render_edge_particle_diagnostic_overlay(image: Union[str, Path, np.ndarray],
     tint[inspectable] = (90, 220, 90)   # green: pixels allowed to inspect
     canvas = cv2.addWeighted(canvas, 0.84, tint, 0.16, 0)
 
-    die_map = inspection["die_map"]
+    die_map = dm
     inner_radius = int(round(inspection["inspection_radii_px"]["inner"]))
     outer_radius = int(round(inspection["inspection_radii_px"]["outer"]))
     cv2.circle(canvas, (die_map.wafer_cx, die_map.wafer_cy), inner_radius, (255, 220, 0), 1)
