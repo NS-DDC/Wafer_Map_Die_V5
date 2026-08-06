@@ -11,6 +11,7 @@ import numpy as np
 from paste_ready_evaluate_bw_noisy_wafer import (
     build_die_map,
     inspect_edge_particles,
+    render_edge_particle_diagnostic_overlay,
     render_edge_particle_overlay,
 )
 
@@ -75,10 +76,15 @@ def main() -> None:
         if image is None:
             raise FileNotFoundError(name)
         die_map = build_die_map(image, grid_method="std", notch_align=False, edge_mode="both")
-        inspection = inspect_edge_particles(image, grid_method="std", notch_align=False, **EDGE_PARAMS)
+        inspection = inspect_edge_particles(
+            image, grid_method="std", notch_align=False,
+            include_debug_components=True, **EDGE_PARAMS)
         overlay_path = RESULT_DIR / f"{Path(name).stem}_edge_particles.png"
+        diagnostic_path = RESULT_DIR / f"{Path(name).stem}_edge_particle_diagnostic.png"
         if not cv2.imwrite(str(overlay_path), render_edge_particle_overlay(image, inspection)):
             raise RuntimeError(f"Could not write: {overlay_path}")
+        if not cv2.imwrite(str(diagnostic_path), render_edge_particle_diagnostic_overlay(image, inspection)):
+            raise RuntimeError(f"Could not write: {diagnostic_path}")
         results.append({
             "image": name,
             "input_shape": list(image.shape),
@@ -86,9 +92,15 @@ def main() -> None:
             "num_dies": die_map.num_dies,
             "pitch_px": [round(float(die_map.pitch_x), 3), round(float(die_map.pitch_y), 3)],
             "inspection_pixels": int(inspection["inspection_mask"].sum()),
+            "mask_summary": inspection["mask_summary"],
+            "debug_component_counts": {
+                "die_excluded": len(inspection["debug_components"]["die_excluded"]),
+                "rejected": len(inspection["debug_components"]["rejected"]),
+            },
             "particle_count": len(inspection["particles"]),
             "particles": inspection["particles"],
             "overlay": str(overlay_path.relative_to(GRAY_DIR)),
+            "diagnostic_overlay": str(diagnostic_path.relative_to(GRAY_DIR)),
         })
         source_for_reference_check = image
 

@@ -26,9 +26,22 @@
         67.0
       ],
       "inspection_pixels": 9841,
+      "mask_summary": {
+        "ring_pixels": 215196,
+        "die_excluded_pixels_in_ring": 205355,
+        "inspection_pixels": 9841,
+        "bright_pixels_inside_die": 636,
+        "bright_components_in_inspection": 39,
+        "accepted_particles": 0
+      },
+      "debug_component_counts": {
+        "die_excluded": 61,
+        "rejected": 39
+      },
       "particle_count": 0,
       "particles": [],
-      "overlay": "edge_particle_results\\111_edge_particles.png"
+      "overlay": "edge_particle_results\\111_edge_particles.png",
+      "diagnostic_overlay": "edge_particle_results\\111_edge_particle_diagnostic.png"
     },
     {
       "image": "2222.png",
@@ -43,9 +56,22 @@
         67.0
       ],
       "inspection_pixels": 4284,
+      "mask_summary": {
+        "ring_pixels": 216032,
+        "die_excluded_pixels_in_ring": 211748,
+        "inspection_pixels": 4284,
+        "bright_pixels_inside_die": 1506,
+        "bright_components_in_inspection": 35,
+        "accepted_particles": 0
+      },
+      "debug_component_counts": {
+        "die_excluded": 137,
+        "rejected": 35
+      },
       "particle_count": 0,
       "particles": [],
-      "overlay": "edge_particle_results\\2222_edge_particles.png"
+      "overlay": "edge_particle_results\\2222_edge_particles.png",
+      "diagnostic_overlay": "edge_particle_results\\2222_edge_particle_diagnostic.png"
     }
   ],
   "reference_particle_injection": {

@@ -64,9 +64,9 @@ def main() -> None:
     paste_fit(canvas, GRAY_DIR / "Paticle" / "22.png", (370, 666, 538, 758))
 
     panel(draw, (642, 180, 1414, 790))
-    text(draw, (676, 214), "2. 검사 영역", size=29, bold=True, fill=CYAN)
-    paste_fit(canvas, GRAY_DIR / by_name["2222.png"]["overlay"], (678, 282, 1378, 748))
-    text(draw, (676, 750), "하늘색 두 원 사이만 검사. die 내부와 wafer rim은 제외.", size=20, fill=MUTED)
+    text(draw, (676, 214), "2. 검사 영역 + 제외 근거", size=29, bold=True, fill=CYAN)
+    paste_fit(canvas, GRAY_DIR / by_name["2222.png"]["diagnostic_overlay"], (678, 282, 1378, 748))
+    text(draw, (676, 750), "주황: die 제외 / 초록: 실제 검사 / D: die 내부 흰 blob / R: 형상 탈락 / P: 최종", size=19, fill=MUTED)
 
     panel(draw, (1446, 180, 2354, 790))
     text(draw, (1480, 214), "3. 외부 조절 파라미터", size=29, bold=True, fill=CYAN)
@@ -84,14 +84,14 @@ def main() -> None:
 
     panel(draw, (46, 828, 2354, 1544))
     text(draw, (78, 862), "4. 검증 결과", size=30, bold=True, fill=GREEN)
-    text(draw, (82, 928), "입력                1채널     Die 수     Pitch       검사 pixel     실제 후보", size=24, bold=True, fill=MUTED)
+    text(draw, (82, 928), "입력                1채널     Die 수     검사 pixel     D: die 제외     R: 탈락     P: 최종", size=24, bold=True, fill=MUTED)
     y = 982
     for name in ("111.png", "2222.png"):
         item = by_name[name]
-        pitch_x, pitch_y = item["pitch_px"]
+        debug = item["debug_component_counts"]
         text(draw, (82, y),
-             f"{name:<18}  OK          {item['num_dies']:>3}      {pitch_x:.0f} x {pitch_y:.0f}      "
-             f"{item['inspection_pixels']:>6}       {item['particle_count']}",
+             f"{name:<18}  OK          {item['num_dies']:>3}      {item['inspection_pixels']:>6}       "
+             f"{debug['die_excluded']:>4}            {debug['rejected']:>4}        {item['particle_count']}",
              size=25, fill=TEXT)
         y += 48
 

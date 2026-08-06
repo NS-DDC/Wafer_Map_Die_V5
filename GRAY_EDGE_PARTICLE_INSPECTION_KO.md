@@ -53,6 +53,19 @@ particles = result["particles"]
 4. 밝기 threshold 후 연결 성분을 만들고 면적, 가로세로 비율, 채움률, 주변 대비를 적용한다.
 5. 통과한 component만 `particles` 목록에 `bbox_px`, `center_px`, 면적과 대비 정보를 기록한다.
 
+## 진단 표기
+
+상세 overlay는 단순 결과만 보여주지 않고 흰 component가 어느 단계에서 제외됐는지 표기한다.
+
+| 표기 | 의미 |
+| --- | --- |
+| 하늘색 원 | 설정한 외곽 ring의 안쪽/바깥쪽 경계 |
+| 주황 음영 | ring 안이지만 partial die를 포함한 die 내부라 검사에서 제외된 영역 |
+| 초록 음영 | 실제 particle 검사 가능 영역 |
+| `D1`, `D2` | die 내부의 밝은 blob. 흰색이더라도 particle 후보가 아니다. |
+| `R1`, `R2` | 검사 영역 안이지만 면적, 형상, 채움률, 대비 기준에서 탈락한 blob |
+| `P1`, `P2` | 모든 기준을 통과한 최종 particle |
+
 ## 검증 결과
 
 `evaluate_gray_edge_particles.py`를 실행해 새 Gray 원본 2장과 Particle 기준 삽입 검증을 수행한다.
@@ -70,6 +83,10 @@ Particle 기준 이미지 `Paticle/22.png`를 die mask 밖의 외곽 영역에 �
 
 ![111 particle overlay](Gray_Wafer/edge_particle_results/111_edge_particles.png)
 
+![111 particle diagnostic](Gray_Wafer/edge_particle_results/111_edge_particle_diagnostic.png)
+
 ### 2222.png Overlay
 
 ![2222 particle overlay](Gray_Wafer/edge_particle_results/2222_edge_particles.png)
+
+![2222 particle diagnostic](Gray_Wafer/edge_particle_results/2222_edge_particle_diagnostic.png)

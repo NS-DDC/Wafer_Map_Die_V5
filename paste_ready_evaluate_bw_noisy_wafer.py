@@ -99,7 +99,8 @@ __all__ = ["WaferDieMap", "build_die_map", "locate_die", "crop_die",
            "validate_quadrant_edges",
            "render_die_grid_mask", "measure_die_render_angle",
            "align_wafer_by_die_render", "measure_wafer_angle_robust",
-           "inspect_edge_particles", "render_edge_particle_overlay"]
+           "inspect_edge_particles", "render_edge_particle_overlay",
+           "render_edge_particle_diagnostic_overlay"]
 
 
 # #############################################################################
@@ -2473,7 +2474,8 @@ def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
                            max_area_px: int = 300,
                            max_aspect_ratio: float = 2.5,
                            min_fill_ratio: float = 0.45,
-                           min_local_contrast: float = 45.0
+                           min_local_contrast: float = 45.0,
+                           include_debug_components: bool = False
                            ) -> Dict[str, Any]:
     """Detect compact bright particles only in an adjustable wafer-edge ring.
 
@@ -2527,16 +2529,36 @@ def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
 
     inspection_mask = ((ring_mask > 0) & (die_mask == 0)).astype(np.uint8)
     bright_mask = ((gray >= int(white_threshold)) & (inspection_mask > 0)).astype(np.uint8)
+    die_bright_mask = ((gray >= int(white_threshold)) & (ring_mask > 0) & (die_mask > 0)).astype(np.uint8)
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bright_mask, 8)
 
     particles: List[Dict[str, Any]] = []
+    rejected_components: List[Dict[str, Any]] = []
+
+    def _record(label: int, reason: str, *, local_contrast: Optional[float] = None) -> Dict[str, Any]:
+        x, y, box_w, box_h, area = (int(value) for value in stats[label])
+        cx, cy = (float(value) for value in centroids[label])
+        record: Dict[str, Any] = {
+            "center_px": (round(cx, 2), round(cy, 2)),
+            "bbox_px": (x, y, x + box_w, y + box_h),
+            "area_px": area,
+            "reason": reason,
+        }
+        if local_contrast is not None:
+            record["local_contrast"] = round(local_contrast, 2)
+        return record
+
     for label in range(1, num_labels):
         x, y, box_w, box_h, area = (int(value) for value in stats[label])
         if not min_area_px <= area <= max_area_px:
+            if include_debug_components:
+                rejected_components.append(_record(label, "area"))
             continue
         aspect_ratio = max(box_w, box_h) / max(1.0, min(box_w, box_h))
         fill_ratio = area / float(max(1, box_w * box_h))
         if aspect_ratio > max_aspect_ratio or fill_ratio < min_fill_ratio:
+            if include_debug_components:
+                rejected_components.append(_record(label, "shape"))
             continue
 
         component_mask = labels[y:y + box_h, x:x + box_w] == label
@@ -2547,9 +2569,13 @@ def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
         local_component = labels[ry1:ry2, rx1:rx2] == label
         local_background = inspection_mask[ry1:ry2, rx1:rx2].astype(bool) & ~local_component
         if int(local_background.sum()) < 8:
+            if include_debug_components:
+                rejected_components.append(_record(label, "background"))
             continue
         local_contrast = mean_intensity - float(np.median(gray[ry1:ry2, rx1:rx2][local_background]))
         if local_contrast < min_local_contrast:
+            if include_debug_components:
+                rejected_components.append(_record(label, "contrast", local_contrast=local_contrast))
             continue
 
         cx, cy = (float(value) for value in centroids[label])
@@ -2565,6 +2591,21 @@ def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
             "radius_from_wafer_center_px": round(float(np.hypot(cx - die_map.wafer_cx, cy - die_map.wafer_cy)), 2),
         })
 
+    die_bright_components: List[Dict[str, Any]] = []
+    if include_debug_components:
+        die_count, _, die_stats, die_centroids = cv2.connectedComponentsWithStats(die_bright_mask, 8)
+        for label in range(1, die_count):
+            x, y, box_w, box_h, area = (int(value) for value in die_stats[label])
+            if area < 3:
+                continue
+            cx, cy = (float(value) for value in die_centroids[label])
+            die_bright_components.append({
+                "center_px": (round(cx, 2), round(cy, 2)),
+                "bbox_px": (x, y, x + box_w, y + box_h),
+                "area_px": area,
+                "reason": "die_excluded",
+            })
+
     return {
         "die_map": die_map,
         "particles": particles,
@@ -2572,6 +2613,15 @@ def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
         "die_exclusion_mask": die_mask,
         "inspection_mask": inspection_mask,
         "bright_mask": bright_mask,
+        "die_bright_mask": die_bright_mask,
+        "mask_summary": {
+            "ring_pixels": int(ring_mask.sum()),
+            "die_excluded_pixels_in_ring": int(((ring_mask > 0) & (die_mask > 0)).sum()),
+            "inspection_pixels": int(inspection_mask.sum()),
+            "bright_pixels_inside_die": int(die_bright_mask.sum()),
+            "bright_components_in_inspection": int(num_labels - 1),
+            "accepted_particles": len(particles),
+        },
         "parameters": {
             "edge_inner_margin_px": edge_inner_margin_px,
             "edge_outer_margin_px": edge_outer_margin_px,
@@ -2588,6 +2638,10 @@ def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
             "inner": round(inner_radius, 2),
             "outer": round(outer_radius, 2),
         },
+        "debug_components": {
+            "die_excluded": die_bright_components,
+            "rejected": rejected_components,
+        } if include_debug_components else None,
     }
 
 
@@ -2607,6 +2661,63 @@ def render_edge_particle_overlay(image: Union[str, Path, np.ndarray],
         cv2.drawMarker(canvas, center, (0, 0, 255), cv2.MARKER_CROSS, 10, 1)
         cv2.putText(canvas, str(particle["id"]), (x1, max(12, y1 - 3)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 1, cv2.LINE_AA)
+    return canvas
+
+
+def render_edge_particle_diagnostic_overlay(image: Union[str, Path, np.ndarray],
+                                            inspection: Dict[str, Any],
+                                            max_debug_components: int = 12) -> np.ndarray:
+    """Render inspection, die-excluded, rejected, and accepted particle areas."""
+    canvas = _load_bgr(image).copy()
+    ring = inspection["ring_mask"].astype(bool)
+    die_in_ring = ring & inspection["die_exclusion_mask"].astype(bool)
+    inspectable = inspection["inspection_mask"].astype(bool)
+
+    tint = canvas.copy()
+    tint[ring] = (255, 150, 0)          # cyan: outer ring
+    canvas = cv2.addWeighted(canvas, 0.78, tint, 0.22, 0)
+    tint = canvas.copy()
+    tint[die_in_ring] = (0, 120, 255)   # orange: die interior exclusion
+    canvas = cv2.addWeighted(canvas, 0.68, tint, 0.32, 0)
+    tint = canvas.copy()
+    tint[inspectable] = (90, 220, 90)   # green: pixels allowed to inspect
+    canvas = cv2.addWeighted(canvas, 0.84, tint, 0.16, 0)
+
+    die_map = inspection["die_map"]
+    inner_radius = int(round(inspection["inspection_radii_px"]["inner"]))
+    outer_radius = int(round(inspection["inspection_radii_px"]["outer"]))
+    cv2.circle(canvas, (die_map.wafer_cx, die_map.wafer_cy), inner_radius, (255, 220, 0), 1)
+    cv2.circle(canvas, (die_map.wafer_cx, die_map.wafer_cy), outer_radius, (255, 220, 0), 1)
+
+    debug = inspection.get("debug_components") or {"die_excluded": [], "rejected": []}
+    groups = (
+        ("D", debug["die_excluded"], (255, 90, 0), "die excluded"),
+        ("R", debug["rejected"], (0, 220, 255), "shape/area rejected"),
+        ("P", inspection["particles"], (0, 0, 255), "accepted particle"),
+    )
+    for prefix, components, color, _ in groups:
+        ranked = sorted(components, key=lambda item: int(item["area_px"]), reverse=True)[:max_debug_components]
+        for index, component in enumerate(ranked, start=1):
+            x1, y1, x2, y2 = component["bbox_px"]
+            center = tuple(int(round(value)) for value in component["center_px"])
+            cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 1)
+            cv2.drawMarker(canvas, center, color, cv2.MARKER_CROSS, 8, 1)
+            cv2.putText(canvas, f"{prefix}{index}", (x1, max(12, y1 - 3)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1, cv2.LINE_AA)
+
+    summary = inspection["mask_summary"]
+    legend = [
+        f"ring={summary['ring_pixels']} px",
+        f"die excluded={summary['die_excluded_pixels_in_ring']} px",
+        f"inspectable={summary['inspection_pixels']} px",
+        f"D=die white {len(debug['die_excluded'])}",
+        f"R=rejected {len(debug['rejected'])}",
+        f"P=accepted {len(inspection['particles'])}",
+    ]
+    cv2.rectangle(canvas, (14, 14), (355, 158), (7, 17, 30), -1)
+    for row, value in enumerate(legend):
+        cv2.putText(canvas, value, (25, 37 + row * 21), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.48, (240, 245, 250), 1, cv2.LINE_AA)
     return canvas
 
 
