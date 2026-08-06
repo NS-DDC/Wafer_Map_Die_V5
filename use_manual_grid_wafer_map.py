@@ -54,8 +54,16 @@ def _as_bgr(image: np.ndarray) -> np.ndarray:
 def detect_wafer_center(image: np.ndarray, *, bg_threshold: int = 20) -> Dict[str, int]:
     """Detect the largest non-background wafer contour.
 
-    Returns a dictionary with ``wafer_cx``, ``wafer_cy``, and ``wafer_r`` in
-    image pixels. This is the only image-analysis step used by build_die_map().
+    Returns
+    -------
+    dict
+        ``{"wafer_cx": int, "wafer_cy": int, "wafer_r": int}``
+
+        - ``wafer_cx``, ``wafer_cy``: image-pixel wafer center.
+        - ``wafer_r``: wafer radius in image pixels.
+
+    This is the only image-analysis step used by :func:`build_die_map`.
+    The function does not inspect or modify the caller's corner/pitch values.
     """
     bgr = _as_bgr(image)
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
@@ -116,7 +124,12 @@ def crop_die(image: np.ndarray, center_x: float, center_y: float,
              die_w: float, die_h: float, *, offset_x: float = 0.0,
              offset_y: float = 0.0, margin_x: float = 0.0,
              margin_y: float = 0.0, border_mode: str = "pad") -> np.ndarray:
-    """Crop one die. ``pad`` preserves requested size with zero padding; ``crop`` clips."""
+    """Crop one die and return a numpy image array.
+
+    ``pad`` returns the requested crop size and fills image-outside pixels with
+    zeros. ``crop`` returns only the image-overlapping region, so its shape can
+    be smaller. This helper returns the crop array itself, not a Die map entry.
+    """
     x1, y1, x2, y2 = _crop_rect(center_x, center_y, die_w, die_h,
                                  offset_x, offset_y, margin_x, margin_y)
     height, width = image.shape[:2]
@@ -142,6 +155,26 @@ class WaferDieMap:
     ``corner_point`` is the shared grid corner `(x0, y0)`.  Die `(0, 0)` is
     the upper-right die from that corner. Its center is
     `(x0 + pitch_x / 2, y0 - pitch_y / 2)`.
+
+    Important returned fields
+    -------------------------
+    ``wafer_cx``, ``wafer_cy``, ``wafer_r``
+        Wafer center/radius detected from the input image in pixels.
+    ``x0``, ``y0``, ``pitch_x``, ``pitch_y``
+        The exact float values supplied by the caller. They are never shifted,
+        re-detected, or rounded for grid calculation.
+    ``dies`` / ``dies_by_index`` / ``get_die(ix, iy)``
+        All retained die entries and index-based lookup access.
+    ``edge_indices`` / ``edge_index_report``
+        Selected edge index list and reason-specific index lists.
+    ``aligned_image``
+        BGR-normalized original image. This manual-grid module never rotates it.
+
+    Each item in ``dies`` is a dict with:
+    ``index``, ``center_px``, ``rect_px``, ``crop_rect_px``, ``real_coord``,
+    ``is_edge_partial``, ``is_edge_ring``, ``edge_distance_px``,
+    ``is_edge_margin``, and ``is_edge``. If ``with_crops=True`` was used,
+    the item additionally contains ``image``.
     """
     wafer_cx: int
     wafer_cy: int
@@ -225,10 +258,24 @@ def build_die_map(image: np.ndarray, corner_point: Tuple[float, float],
 
     Returns
     -------
-    WaferDieMap:
-        Includes wafer center/radius, all die entries, `edge_indices`, and
-        `edge_index_report`. Each die has `index`, `center_px`, `rect_px`,
-        `crop_rect_px`, `real_coord`, `edge_distance_px`, and edge flags.
+    WaferDieMap
+        ``dm.wafer_cx``, ``dm.wafer_cy``, ``dm.wafer_r`` are detected from
+        the image. ``dm.x0``, ``dm.y0``, ``dm.pitch_x``, and ``dm.pitch_y``
+        preserve the supplied float values exactly.
+
+        ``dm.dies`` is a list of die dictionaries. A die dictionary contains:
+        - ``index``: `(ix, iy)` grid index; right is `ix+`, upward is `iy+`.
+        - ``center_px``: float die-center `(cx, cy)` in image pixels.
+        - ``rect_px``: rounded `(x1, y1, x2, y2)` die rectangle for drawing.
+        - ``crop_rect_px``: rectangle after requested crop offset/margin.
+        - ``real_coord``: die-center coordinate relative to wafer center.
+        - ``is_edge_partial``, ``is_edge_ring``, ``is_edge_margin``,
+          ``edge_distance_px``, and final ``is_edge`` flags.
+        - ``image``: only present if ``with_crops=True``.
+
+        ``dm.edge_indices`` returns selected `(ix, iy)` indices using the
+        current ``edge_mode``. ``dm.edge_index_report`` separately returns
+        ``selected``, ``partial``, ``ring``, and ``margin`` index lists.
     """
     bgr = _as_bgr(image)
     try:
@@ -315,7 +362,29 @@ def locate_die(die_map: WaferDieMap, point: Optional[Tuple[float, float]] = None
                bbox: Optional[Tuple[float, float, float, float]] = None, *,
                offset_x: float = 0.0, offset_y: float = 0.0,
                margin_x: float = 0.0, margin_y: float = 0.0) -> Dict[str, Any]:
-    """Map a point or BBox to the manual float grid and return die metadata."""
+    """Map a point or BBox to the manual float grid and return die metadata.
+
+    Use exactly one input: ``point=(x, y)`` or ``bbox=(x1, y1, x2, y2)``.
+    A BBox is mapped using its center. A grid index is returned even when the
+    queried location was clipped out of ``dm.dies`` at the wafer edge.
+
+    Returns
+    -------
+    dict
+        ``input_type``: ``"point"`` or ``"bbox"``.
+        ``query_px``: actual queried `(x, y)`; BBox center for BBox input.
+        ``die_index``: manual-grid `(ix, iy)` containing the queried point.
+        ``die_center_px`` / ``die_rect_px``: computed die center and rectangle.
+        ``crop_rect_px``: crop rectangle after requested offset/margin.
+        ``real_coord`` / ``real_distance``: query coordinate and distance
+        relative to the wafer center in ``pixel_per_unit`` units.
+        ``die_real_coord``: die-center coordinate in the same real units.
+        ``wafer_center_px`` / ``corner_px``: detected wafer center and the
+        caller-provided float grid corner.
+        ``is_edge``, ``is_edge_partial``, ``is_edge_ring``,
+        ``is_edge_margin``, ``edge_distance_px``, ``edge_mode``: edge result.
+        ``in_wafer``: whether the query coordinate is within the original
+        detected wafer circle.
     if (point is None) == (bbox is None):
         raise ValueError("Specify exactly one of point or bbox.")
     if bbox is not None:
@@ -362,7 +431,12 @@ def locate_die(die_map: WaferDieMap, point: Optional[Tuple[float, float]] = None
 
 
 def render_die_map_overlay(image: np.ndarray, die_map: WaferDieMap) -> np.ndarray:
-    """Return a BGR overlay: green regular dies, red selected edge dies, cyan wafer circle."""
+    """Return a BGR overlay image without writing a file.
+
+    Regular dies are green, current ``is_edge`` dies are red, the effective
+    edge circle is cyan, and the detected wafer center is magenta. Save the
+    returned ``np.ndarray`` with ``cv2.imwrite(...)`` when needed.
+    """
     overlay = _as_bgr(image).copy()
     for die in die_map.dies:
         x1, y1, x2, y2 = die["rect_px"]
