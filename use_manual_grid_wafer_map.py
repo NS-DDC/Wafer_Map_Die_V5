@@ -385,6 +385,7 @@ def locate_die(die_map: WaferDieMap, point: Optional[Tuple[float, float]] = None
         ``is_edge_margin``, ``edge_distance_px``, ``edge_mode``: edge result.
         ``in_wafer``: whether the query coordinate is within the original
         detected wafer circle.
+    """
     if (point is None) == (bbox is None):
         raise ValueError("Specify exactly one of point or bbox.")
     if bbox is not None:
