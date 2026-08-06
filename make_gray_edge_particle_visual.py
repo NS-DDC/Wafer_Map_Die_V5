@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Create a Korean visual board for Gray edge-only particle inspection."""
+"""Create a Korean visual board for particle defects in a wafer-ring ROI."""
 
 import json
 from pathlib import Path
@@ -53,8 +53,8 @@ def main() -> None:
 
     canvas = Image.new("RGB", (2400, 1600), BG)
     draw = ImageDraw.Draw(canvas)
-    text(draw, (64, 44), "Gray Wafer 외곽 Particle 검사", size=52, bold=True)
-    text(draw, (66, 118), "흰색 전체 검출이 아니라 외곽 ring + die 내부 제외 + blob 형상 필터를 함께 적용", size=25, fill=MUTED)
+    text(draw, (64, 44), "Gray Wafer Ring ROI Particle Defect 검사", size=52, bold=True)
+    text(draw, (66, 118), "Die edge 분류와 별개: wafer ring ROI + die 내부 제외 + blob 형상 필터 적용", size=25, fill=MUTED)
 
     panel(draw, (46, 180, 610, 790))
     text(draw, (78, 214), "1. 기준 이미지", size=29, bold=True, fill=CYAN)
@@ -72,8 +72,8 @@ def main() -> None:
     text(draw, (1480, 214), "3. 외부 조절 파라미터", size=29, bold=True, fill=CYAN)
     params = summary["parameters"]
     text(draw, (1482, 292),
-         f"edge_inner_margin_px = {params['edge_inner_margin_px']}\n"
-         f"edge_outer_margin_px = {params['edge_outer_margin_px']}\n"
+         f"ring_inner_margin_px = {params['ring_inner_margin_px']}\n"
+         f"ring_outer_margin_px = {params['ring_outer_margin_px']}\n"
          f"die_exclusion_margin_px = {params['die_exclusion_margin_px']}\n"
          f"white_threshold = {params['white_threshold']}\n"
          f"min_area_px = {params['min_area_px']}\n"
@@ -102,7 +102,7 @@ def main() -> None:
          f"검출 결과: {check['detected_count']}개, 검출 중심: {check['first_detected_center_px']}  -> PASS",
          size=24, fill=TEXT)
     text(draw, (1250, 1114), "판정 순서", size=27, bold=True, fill=GREEN)
-    text(draw, (1250, 1162), "외곽 ring 선택  ->  partial die 포함 die mask 제외\n"
+    text(draw, (1250, 1162), "wafer ring ROI 선택  ->  partial die 포함 die mask 제외\n"
                               "-> 밝기 threshold  ->  면적/형상/대비 필터\n"
                               "-> 남은 compact blob만 particle", size=24, fill=TEXT, spacing=13)
     text(draw, (82, 1428), "실제 입력의 흰 점이 die 내부이면 후보 0개가 정상이다. 이 경우 오검출이 아니라 die 제외 로직이 동작한 결과다.", size=22, fill=RED)

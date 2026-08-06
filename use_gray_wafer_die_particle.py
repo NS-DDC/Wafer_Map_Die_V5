@@ -99,9 +99,10 @@ __all__ = ["WaferDieMap", "build_die_map", "locate_die", "crop_die",
            "validate_quadrant_edges",
            "render_die_grid_mask", "measure_die_render_angle",
            "align_wafer_by_die_render", "measure_wafer_angle_robust",
+           "inspect_particles_in_wafer_ring", "render_particle_overlay",
+           "render_particle_diagnostic_overlay",
            "inspect_edge_particles", "inspect_edge_particles_from_image",
-           "render_edge_particle_overlay",
-           "render_edge_particle_diagnostic_overlay"]
+           "render_edge_particle_overlay", "render_edge_particle_diagnostic_overlay"]
 
 
 # #############################################################################
@@ -694,7 +695,7 @@ def clip_die(image: np.ndarray, center_x: int, center_y: int,
 # [수정하지 않는 편이 좋은 값]
 # - build_die_map 내부의 float pitch 경계 계산: 정수 pitch를 반복 누적하면 wafer 중심에서
 #   멀어질수록 die 위치가 밀린다. 현재는 각 경계를 float 식으로 독립 계산한 뒤 한 번만 반올림한다.
-# - inspect_edge_particles의 partial die 포함 mask: die 내부의 밝은 회로선을 particle로
+# - wafer ring particle 검사의 partial die 포함 mask: die 내부의 밝은 회로선을 particle로
 #   잘못 검출하지 않기 위한 장치이므로, 일반 die map의 edge clip과 분리해 유지해야 한다.
 #
 DEFAULT_GRID_METHOD = "corner"   # "corner"(권장, street 선으로 코너 직접 검출) | "hybrid" | "std" | "color"
@@ -703,7 +704,7 @@ DEFAULT_PIXEL_PER_UNIT = 32      # 실측 좌표 환산 (px / unit). real_coord�
 DEFAULT_EDGE_MARGIN = 1.0        # die 중심 포함 기준: 중심거리 <= wafer_r * 이 값.
                                  # 작게 하면 가장자리 die가 더 일찍 빠진다. 1.0보다 크게 하면 wafer 밖 후보도 늘 수 있다.
 DEFAULT_CLIP_PARTIAL_EDGE = True # True면 사각형의 모서리 하나라도 safety circle 밖인 die를 결과 map에서 제외.
-                                 # False는 edge particle 검사처럼 partial die까지 마스크해야 할 때만 사용한다.
+                                 # False는 wafer ring particle 검사처럼 partial die까지 마스크해야 할 때만 사용한다.
 
 # --- EDGE die 판정 방식 (둘 다 계산되어 entry 에 저장; is_edge 가 무엇을 가리킬지 선택) ---
 #   "circle" : is_edge = is_edge_partial (die 사각형이 wafer 원 밖으로 일부라도 나감)
@@ -2479,23 +2480,24 @@ def locate_die(die_map: WaferDieMap,
 #   r = locate_die(dm, point=(5499, 4700))
 #   print(r["is_edge"], r["is_edge_partial"], r["is_edge_ring"], r["edge_mode"])
 #
-#   # 6) ★ wafer 원 외곽(circle ring) particle 검사 순서
+#   # 6) ★ wafer ring ROI 안의 particle 검사 순서
+#   # `is_edge`는 die의 위치 분류이고, 아래 particle은 defect 후보이다. 서로 다른 개념이다.
 #   # 6-1. 아래 dm은 모든 좌표와 회전 보정의 기준이다. Gray 1채널 image도 그대로 넣을 수 있다.
 #   dm = build_die_map(image, grid_method="std", notch_align=False,
 #                      edge_mode="both", clip_partial_edge=True)
 #   # 6-2. `inspection`에는 최종 particle, 후보/제외 mask, 진단용 D/R 목록이 함께 반환된다.
-#   inspection = inspect_edge_particles(
+#   inspection = inspect_particles_in_wafer_ring(
 #       dm,
-#       edge_inner_margin_px=75,  # wafer rim에서 안쪽으로 75px까지 검사
-#       edge_outer_margin_px=10,  # rim 바로 근처 10px는 제외
+#       ring_inner_margin_px=75,  # wafer rim에서 안쪽으로 75px까지 검사할 ROI
+#       ring_outer_margin_px=10,  # rim 바로 근처 10px는 ROI에서 제외
 #       white_threshold=220,      # 밝은 후보 gray 하한(0~255)
 #       min_area_px=20, max_area_px=300,
 #       include_debug_components=True,
 #   )
 #   particles = inspection["particles"]  # 최종 통과 목록. 없으면 빈 list.
 #   # 6-3. 결과 이미지는 반드시 같은 dm을 넘긴다. dm.aligned_image 좌표계에 그려진다.
-#   overlay = render_edge_particle_overlay(dm, inspection)             # 최종 P만 표시
-#   diagnostic = render_edge_particle_diagnostic_overlay(dm, inspection) # D/R/P 전체 표시
+#   overlay = render_particle_overlay(dm, inspection)             # 최종 P만 표시
+#   diagnostic = render_particle_diagnostic_overlay(dm, inspection) # D/R/P 전체 표시
 #   cv2.imwrite("edge_particle_overlay.png", overlay)
 #   cv2.imwrite("edge_particle_diagnostic.png", diagnostic)
 
@@ -2618,9 +2620,9 @@ def _make_die_exclusion_mask(dm: WaferDieMap, image_shape: Tuple[int, int],
     return mask
 
 
-def inspect_edge_particles(dm: WaferDieMap, *,
-                           edge_inner_margin_px: int = 75,
-                           edge_outer_margin_px: int = 10,
+def inspect_particles_in_wafer_ring(dm: WaferDieMap, *,
+                           ring_inner_margin_px: int = 75,
+                           ring_outer_margin_px: int = 10,
                            ring_guard_px: int = 2,
                            die_exclusion_margin_px: int = 2,
                            white_threshold: int = 220,
@@ -2631,7 +2633,11 @@ def inspect_edge_particles(dm: WaferDieMap, *,
                            min_local_contrast: float = 45.0,
                            include_debug_components: bool = False
                            ) -> Dict[str, Any]:
-    """조절 가능한 wafer 외곽 ring에서만 작고 밝은 particle을 찾는다.
+    """조절 가능한 wafer 외곽 ring ROI에서 particle defect 후보를 찾는다.
+
+    **중요한 구분:** `is_edge`는 wafer 외곽에 있는 *die*의 속성이다. 이 함수가
+    찾는 `particles`는 ring ROI 안의 defect 후보일 뿐, particle 자체에 edge라는
+    속성은 부여하지 않는다. ring은 particle 검사 범위를 제한하는 기하학적 ROI다.
 
     수정 우선순위는 `edge_inner/outer_margin_px` -> `white_threshold` -> 면적 범위
     -> 형상/대비 필터 순서가 좋다. threshold만 낮춰서 검출 수를 맞추면 die/street
@@ -2661,8 +2667,8 @@ def inspect_edge_particles(dm: WaferDieMap, *,
         - ``mask_summary``: 위 mask의 pixel 수와 최종 개수 요약
         - ``debug_components``: 옵션을 켰을 때 D(die 내부 제외), R(필터 탈락) 목록
     """
-    if edge_inner_margin_px <= edge_outer_margin_px:
-        raise ValueError("edge_inner_margin_px must be larger than edge_outer_margin_px")
+    if ring_inner_margin_px <= ring_outer_margin_px:
+        raise ValueError("ring_inner_margin_px must be larger than ring_outer_margin_px")
     if ring_guard_px < 0 or die_exclusion_margin_px < 0:
         raise ValueError("ring_guard_px and die_exclusion_margin_px must be >= 0")
     if min_area_px <= 0 or max_area_px < min_area_px:
@@ -2671,7 +2677,7 @@ def inspect_edge_particles(dm: WaferDieMap, *,
         raise ValueError("max_aspect_ratio must be > 0")
 
     if not isinstance(dm, WaferDieMap):
-        raise TypeError("inspect_edge_particles(dm, ...) requires a WaferDieMap from build_die_map()")
+        raise TypeError("inspect_particles_in_wafer_ring(dm, ...) requires a WaferDieMap from build_die_map()")
     if dm.aligned_image is None:
         raise ValueError("dm.aligned_image is required; create dm with build_die_map()")
 
@@ -2684,8 +2690,8 @@ def inspect_edge_particles(dm: WaferDieMap, *,
     # margin은 wafer 원의 바깥쪽에서 안쪽으로 잰 거리다.
     # inner margin을 키우면 더 안쪽까지 검사하고, outer margin을 줄이면 rim에 더 가깝게 검사한다.
     # guard는 경계에 반쯤 걸친 blob을 불안정하게 분류하지 않도록 양 끝을 추가로 비운다.
-    inner_radius = float(dm.wafer_r - edge_inner_margin_px + ring_guard_px)
-    outer_radius = float(dm.wafer_r - edge_outer_margin_px - ring_guard_px)
+    inner_radius = float(dm.wafer_r - ring_inner_margin_px + ring_guard_px)
+    outer_radius = float(dm.wafer_r - ring_outer_margin_px - ring_guard_px)
     if inner_radius <= 0 or outer_radius <= inner_radius:
         raise ValueError("edge ring parameters leave no inspection area")
     ring_mask = ((radius >= inner_radius) & (radius <= outer_radius)).astype(np.uint8)
@@ -2802,8 +2808,8 @@ def inspect_edge_particles(dm: WaferDieMap, *,
             "accepted_particles": len(particles),     # 면적/형상/배경/대비까지 통과한 최종 개수.
         },
         "parameters": {  # 이번 결과에 실제 적용한 입력 파라미터. 재현/로그 저장용.
-            "edge_inner_margin_px": edge_inner_margin_px,
-            "edge_outer_margin_px": edge_outer_margin_px,
+            "ring_inner_margin_px": ring_inner_margin_px,
+            "ring_outer_margin_px": ring_outer_margin_px,
             "ring_guard_px": ring_guard_px,
             "die_exclusion_margin_px": die_exclusion_margin_px,
             "white_threshold": white_threshold,
@@ -2824,16 +2830,34 @@ def inspect_edge_particles(dm: WaferDieMap, *,
     }
 
 
+def inspect_edge_particles(dm: WaferDieMap, *,
+                           edge_inner_margin_px: int = 75,
+                           edge_outer_margin_px: int = 10,
+                           **particle_parameters: Any) -> Dict[str, Any]:
+    """호환용 이전 이름. 새 코드에서는 `inspect_particles_in_wafer_ring()`을 사용한다.
+
+    `edge_*`는 particle의 속성이 아니라 wafer ring ROI의 옛 파라미터명이다.
+    particle 결과에는 `is_edge`가 없으며, die의 edge 여부는 `dm.dies[*]["is_edge"]`로
+    별도로 확인한다.
+    """
+    return inspect_particles_in_wafer_ring(
+        dm,
+        ring_inner_margin_px=edge_inner_margin_px,
+        ring_outer_margin_px=edge_outer_margin_px,
+        **particle_parameters,
+    )
+
+
 def inspect_edge_particles_from_image(image: Union[str, Path, np.ndarray], *,
                                       grid_method: str = "std",
                                       notch_align: bool = False,
                                       **particle_parameters: Any) -> Dict[str, Any]:
     """이미지에서 바로 시작해야 할 때 쓰는 보조 함수.
 
-    주 사용 방식은 ``dm = build_die_map(image); inspect_edge_particles(dm)``이다.
+    주 사용 방식은 ``dm = build_die_map(image); inspect_particles_in_wafer_ring(dm)``이다.
     기존처럼 이미지 한 장만 가진 상황에서는 이 함수를 사용한다. 함수명에
     ``from_image``을 넣어 dm 기반 API와 혼동하지 않도록 구분했다. 반환값의 키와
-    의미는 ``inspect_edge_particles(dm, ...)``와 완전히 같다.
+    의미는 ``inspect_particles_in_wafer_ring(dm, ...)``와 완전히 같다.
     """
     dm = build_die_map(
         image,
@@ -2841,12 +2865,12 @@ def inspect_edge_particles_from_image(image: Union[str, Path, np.ndarray], *,
         notch_align=notch_align,
         edge_mode="both",
     )
-    return inspect_edge_particles(dm, **particle_parameters)
+    return inspect_particles_in_wafer_ring(dm, **particle_parameters)
 
 
-def render_edge_particle_overlay(dm: WaferDieMap,
-                                 inspection: Dict[str, Any]) -> np.ndarray:
-    """`dm` 좌표계에서 검사 ring과 최종 particle을 그린다.
+def render_particle_overlay(dm: WaferDieMap,
+                            inspection: Dict[str, Any]) -> np.ndarray:
+    """`dm` 좌표계에서 wafer ring ROI와 최종 particle을 그린다.
 
     Returns
     -------
@@ -2873,10 +2897,10 @@ def render_edge_particle_overlay(dm: WaferDieMap,
     return canvas
 
 
-def render_edge_particle_diagnostic_overlay(dm: WaferDieMap,
-                                            inspection: Dict[str, Any],
-                                            max_debug_components: int = 12) -> np.ndarray:
-    """`dm` 좌표계에 검사/제외/탈락/통과 영역을 상세하게 그린다.
+def render_particle_diagnostic_overlay(dm: WaferDieMap,
+                                       inspection: Dict[str, Any],
+                                       max_debug_components: int = 12) -> np.ndarray:
+    """`dm` 좌표계에 wafer ring 검사/제외/탈락/통과 영역을 상세하게 그린다.
 
     Returns
     -------
@@ -2937,6 +2961,19 @@ def render_edge_particle_diagnostic_overlay(dm: WaferDieMap,
         cv2.putText(canvas, value, (25, 37 + row * 21), cv2.FONT_HERSHEY_SIMPLEX,
                     0.48, (240, 245, 250), 1, cv2.LINE_AA)
     return canvas
+
+
+def render_edge_particle_overlay(dm: WaferDieMap,
+                                 inspection: Dict[str, Any]) -> np.ndarray:
+    """호환용 이전 이름. 새 코드에서는 `render_particle_overlay()`를 사용한다."""
+    return render_particle_overlay(dm, inspection)
+
+
+def render_edge_particle_diagnostic_overlay(dm: WaferDieMap,
+                                            inspection: Dict[str, Any],
+                                            max_debug_components: int = 12) -> np.ndarray:
+    """호환용 이전 이름. 새 코드에서는 `render_particle_diagnostic_overlay()`를 사용한다."""
+    return render_particle_diagnostic_overlay(dm, inspection, max_debug_components)
 
 
 def evaluate_bw_noisy_wafer(image_path: Union[str, Path],

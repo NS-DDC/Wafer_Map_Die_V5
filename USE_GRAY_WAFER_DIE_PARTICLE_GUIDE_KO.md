@@ -11,7 +11,7 @@
 
 ## 전체 처리 흐름
 
-![Gray wafer 외곽 particle 검사 로직](Visuals/gray_edge_particle_inspection_ko.png)
+![Gray wafer ring ROI particle defect 검사 로직](Visuals/gray_edge_particle_inspection_ko.png)
 
 1. 입력 이미지를 BGR로 정규화하고 wafer 원판 밖의 노이즈를 제거한다.
 2. die grid의 projection/FFT 정보를 이용해 회전 각도를 측정하고 필요하면 보정한다.
@@ -83,22 +83,22 @@ print(found["die_index"], found["die_center_px"], found["is_edge"])
 
 각 `die` 항목에는 `index`, `center_px`, `rect_px`, `crop_rect_px`, `real_coord`, `is_edge_partial`, `is_edge_ring`, `is_edge`가 들어간다.
 
-## 2. Wafer 외곽 Particle 검사
+## 2. Wafer Ring ROI Particle 검사
 
 ```python
 import cv2
 from use_gray_wafer_die_particle import (
-    inspect_edge_particles,
-    render_edge_particle_diagnostic_overlay,
+    inspect_particles_in_wafer_ring,
+    render_particle_diagnostic_overlay,
 )
 
 image = cv2.imread("Gray_Wafer/2222.png", cv2.IMREAD_GRAYSCALE)
 dm = build_die_map(image, grid_method="std", notch_align=False, edge_mode="both")
 
-inspection = inspect_edge_particles(
+inspection = inspect_particles_in_wafer_ring(
     dm,
-    edge_inner_margin_px=75,
-    edge_outer_margin_px=10,
+    ring_inner_margin_px=75,
+    ring_outer_margin_px=10,
     ring_guard_px=2,
     die_exclusion_margin_px=2,
     white_threshold=220,
@@ -113,18 +113,18 @@ inspection = inspect_edge_particles(
 for particle in inspection["particles"]:
     print(particle["id"], particle["center_px"], particle["bbox_px"])
 
-debug_image = render_edge_particle_diagnostic_overlay(dm, inspection)
+debug_image = render_particle_diagnostic_overlay(dm, inspection)
 cv2.imwrite("edge_particle_debug.png", debug_image)
 ```
 
-Particle 검사는 흰색 전체를 검출하지 않는다. 기존 흐름처럼 먼저 `dm = build_die_map(image, ...)`을 만들고, 그 `dm`을 모든 particle 함수에 전달한다. `edge_inner_margin_px=75`, `edge_outer_margin_px=10`이면 wafer 원 외곽에서 10px 안쪽부터 75px 안쪽까지의 circle ring만 검사한다. 그 안에서도 partial die를 포함한 모든 die 사각형을 제외한다. 남은 영역의 밝은 blob만 면적, 가로세로 비, 채움 비율, 주변 대비 기준을 모두 통과해야 particle이 된다.
+**개념 구분:** `is_edge`는 wafer 외곽에 있는 die의 속성이고, `particles`는 defect 후보 목록이다. particle 자체에는 edge 여부를 붙이지 않는다. 기존 흐름처럼 먼저 `dm = build_die_map(image, ...)`을 만들고, 그 `dm`을 모든 particle 함수에 전달한다. `ring_inner_margin_px=75`, `ring_outer_margin_px=10`이면 wafer 원 외곽에서 10px 안쪽부터 75px 안쪽까지의 circle ring을 **검사 ROI**로만 사용한다. 그 안에서도 partial die를 포함한 모든 die 사각형을 제외한다. 남은 영역의 밝은 blob만 면적, 가로세로 비, 채움 비율, 주변 대비 기준을 모두 통과해야 particle이 된다.
 
-이미지만 있고 `dm`을 아직 만들지 않은 경우에는 보조 함수 `inspect_edge_particles_from_image(image, ...)`를 사용할 수 있다. 일반 사용과 overlay 좌표 일관성을 위해서는 `dm` 방식이 권장된다.
+이미지만 있고 `dm`을 아직 만들지 않은 경우에는 보조 함수 `inspect_edge_particles_from_image(image, ...)`를 사용할 수 있다. 일반 사용과 overlay 좌표 일관성을 위해서는 `dm` 방식이 권장된다. 이전 `inspect_edge_particles()`와 `render_edge_particle_*()` 이름은 호환용으로 남아 있지만, 새 코드는 `wafer_ring` 이름을 사용한다.
 
 | 파라미터 | 의미 |
 | --- | --- |
-| `edge_inner_margin_px` | wafer edge에서 안쪽으로 검사할 시작 위치 |
-| `edge_outer_margin_px` | rim에 너무 가까운 영역을 제외하는 폭 |
+| `ring_inner_margin_px` | wafer rim에서 안쪽으로 검사 ROI가 끝나는 위치 |
+| `ring_outer_margin_px` | rim에 너무 가까운 영역을 ROI에서 제외하는 폭 |
 | `ring_guard_px` | ring 경계에 걸친 blob을 막는 보호 폭 |
 | `die_exclusion_margin_px` | die 내부 제외 영역을 확장하는 폭 |
 | `white_threshold` | 밝은 후보의 최소 gray 값 |

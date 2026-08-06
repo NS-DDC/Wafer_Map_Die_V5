@@ -10,9 +10,9 @@ import numpy as np
 
 from use_gray_wafer_die_particle import (
     build_die_map,
-    inspect_edge_particles,
-    render_edge_particle_diagnostic_overlay,
-    render_edge_particle_overlay,
+    inspect_particles_in_wafer_ring,
+    render_particle_diagnostic_overlay,
+    render_particle_overlay,
 )
 
 
@@ -24,9 +24,9 @@ RESULT_DIR = GRAY_DIR / "edge_particle_results"
 SUMMARY_PATH = GRAY_DIR / "edge_particle_validation.json"
 
 # These are intentionally ordinary call parameters, not hidden constants.
-EDGE_PARAMS = {
-    "edge_inner_margin_px": 75,
-    "edge_outer_margin_px": 10,
+RING_PARAMS = {
+    "ring_inner_margin_px": 75,
+    "ring_outer_margin_px": 10,
     "ring_guard_px": 2,
     "die_exclusion_margin_px": 2,
     "white_threshold": 220,
@@ -46,7 +46,7 @@ def _synthetic_reference_check(image: np.ndarray) -> dict:
     reference = cv2.resize(reference, (13, 11), interpolation=cv2.INTER_AREA)
 
     probe_dm = build_die_map(image, grid_method="std", notch_align=False, edge_mode="both")
-    probe = inspect_edge_particles(probe_dm, **EDGE_PARAMS)
+    probe = inspect_particles_in_wafer_ring(probe_dm, **RING_PARAMS)
     valid = cv2.erode(probe["inspection_mask"], np.ones(reference.shape, dtype=np.uint8))
     locations = np.argwhere(valid > 0)
     if len(locations) == 0:
@@ -59,7 +59,7 @@ def _synthetic_reference_check(image: np.ndarray) -> dict:
                        x - half_w:x - half_w + reference.shape[1]]
     target[:] = np.maximum(target, reference)
     synthetic_dm = build_die_map(synthetic, grid_method="std", notch_align=False, edge_mode="both")
-    detected = inspect_edge_particles(synthetic_dm, **EDGE_PARAMS)
+    detected = inspect_particles_in_wafer_ring(synthetic_dm, **RING_PARAMS)
     first = detected["particles"][0] if detected["particles"] else None
     return {
         "injected_center_px": [x, y],
@@ -78,13 +78,13 @@ def main() -> None:
         if image is None:
             raise FileNotFoundError(name)
         die_map = build_die_map(image, grid_method="std", notch_align=False, edge_mode="both")
-        inspection = inspect_edge_particles(
-            die_map, include_debug_components=True, **EDGE_PARAMS)
+        inspection = inspect_particles_in_wafer_ring(
+            die_map, include_debug_components=True, **RING_PARAMS)
         overlay_path = RESULT_DIR / f"{Path(name).stem}_edge_particles.png"
         diagnostic_path = RESULT_DIR / f"{Path(name).stem}_edge_particle_diagnostic.png"
-        if not cv2.imwrite(str(overlay_path), render_edge_particle_overlay(die_map, inspection)):
+        if not cv2.imwrite(str(overlay_path), render_particle_overlay(die_map, inspection)):
             raise RuntimeError(f"Could not write: {overlay_path}")
-        if not cv2.imwrite(str(diagnostic_path), render_edge_particle_diagnostic_overlay(die_map, inspection)):
+        if not cv2.imwrite(str(diagnostic_path), render_particle_diagnostic_overlay(die_map, inspection)):
             raise RuntimeError(f"Could not write: {diagnostic_path}")
         results.append({
             "image": name,
@@ -109,7 +109,7 @@ def main() -> None:
     reference_check = _synthetic_reference_check(source_for_reference_check)
     summary = {
         "test_scope": "Gray_Wafer/111.png and Gray_Wafer/2222.png",
-        "parameters": EDGE_PARAMS,
+        "parameters": RING_PARAMS,
         "results": results,
         "reference_particle_injection": reference_check,
         "all_checks_passed": all(item["input_channels"] == 1 for item in results)
@@ -118,7 +118,7 @@ def main() -> None:
     SUMMARY_PATH.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     if not summary["all_checks_passed"]:
-        raise SystemExit("Gray edge particle validation failed")
+        raise SystemExit("Gray wafer-ring particle validation failed")
 
 
 if __name__ == "__main__":

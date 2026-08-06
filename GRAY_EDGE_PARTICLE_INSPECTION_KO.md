@@ -1,4 +1,4 @@
-# Gray Wafer 외곽 Particle 검사
+# Gray Wafer Ring ROI Particle 검사
 
 ![외곽 particle 로직과 검증 결과](Visuals/gray_edge_particle_inspection_ko.png)
 
@@ -10,18 +10,18 @@
 
 기존 방식대로 먼저 `dm`을 만들고, particle 함수에는 `dm`을 넣는다. `dm.aligned_image`를 기준으로 검사하므로 회전 보정 뒤에도 die 좌표와 particle 좌표가 일치한다.
 
-`edge_inner_margin_px=75`, `edge_outer_margin_px=10`은 wafer 원 외곽에서 10px 안쪽부터 75px 안쪽까지의 **원형 ring**만 검사한다. `edge_mode="both"`는 die edge 표기용이고, particle 검사의 원형 범위는 이 두 margin 파라미터로 정한다.
+`is_edge`는 wafer 외곽 die의 분류이고 particle은 defect 후보이므로 서로 다른 개념이다. `ring_inner_margin_px=75`, `ring_outer_margin_px=10`은 wafer 원 외곽에서 10px 안쪽부터 75px 안쪽까지의 **원형 ring ROI**만 검사한다. `edge_mode="both"`는 die edge 표기용이고, particle 검사 ROI는 이 두 ring margin 파라미터로 정한다.
 
 ```python
 import cv2
-from use_gray_wafer_die_particle import build_die_map, inspect_edge_particles
+from use_gray_wafer_die_particle import build_die_map, inspect_particles_in_wafer_ring
 
 image = cv2.imread("Gray_Wafer/2222.png", cv2.IMREAD_GRAYSCALE)
 dm = build_die_map(image, grid_method="std", notch_align=False, edge_mode="both")
-result = inspect_edge_particles(
+result = inspect_particles_in_wafer_ring(
     dm,
-    edge_inner_margin_px=75,
-    edge_outer_margin_px=10,
+    ring_inner_margin_px=75,
+    ring_outer_margin_px=10,
     ring_guard_px=2,
     die_exclusion_margin_px=2,
     white_threshold=220,
@@ -38,8 +38,8 @@ particles = result["particles"]
 
 | 파라미터 | 기본값 | 의미 |
 | --- | ---: | --- |
-| `edge_inner_margin_px` | 75 | wafer edge에서 안쪽으로 검사할 폭. 키우면 더 넓은 외곽 영역을 검사한다. |
-| `edge_outer_margin_px` | 10 | wafer rim에 너무 가까운 영역을 제외한다. 줄이면 rim 쪽까지 더 검사한다. |
+| `ring_inner_margin_px` | 75 | wafer rim에서 안쪽으로 검사 ROI가 끝나는 위치. 키우면 더 넓은 외곽 ROI를 검사한다. |
+| `ring_outer_margin_px` | 10 | wafer rim에 너무 가까운 영역을 ROI에서 제외한다. 줄이면 rim 쪽까지 더 검사한다. |
 | `ring_guard_px` | 2 | ring의 양쪽 경계에서 잘린 blob을 막는 안전 여유다. |
 | `die_exclusion_margin_px` | 2 | partial die를 포함한 모든 die 내부 제외 영역의 확장값이다. |
 | `white_threshold` | 220 | 후보 밝기 하한값이다. |

@@ -1,8 +1,8 @@
 {
   "test_scope": "Gray_Wafer/111.png and Gray_Wafer/2222.png",
   "parameters": {
-    "edge_inner_margin_px": 75,
-    "edge_outer_margin_px": 10,
+    "ring_inner_margin_px": 75,
+    "ring_outer_margin_px": 10,
     "ring_guard_px": 2,
     "die_exclusion_margin_px": 2,
     "white_threshold": 220,
