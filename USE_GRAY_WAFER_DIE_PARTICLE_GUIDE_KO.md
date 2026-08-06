@@ -130,7 +130,20 @@ Particle 검사는 흰색 전체를 검출하지 않는다. 기존 흐름처럼 
 | `max_aspect_ratio`, `min_fill_ratio` | street/긴 선 조각을 제외하는 형상 기준 |
 | `min_local_contrast` | 주변 대비가 충분한 blob만 통과시키는 기준 |
 
-반환값 `inspection`에는 최종 `particles`와 함께 `ring_mask`, `die_exclusion_mask`, `inspection_mask`, `mask_summary`, `parameters`가 포함된다. `include_debug_components=True`이면 `debug_components`에 die 내부로 제외된 `D`와 형상/면적/대비에서 탈락한 `R`도 들어간다.
+반환값 `inspection`에는 최종 `particles`와 함께 `ring_mask`, `die_exclusion_mask`, `inspection_mask`, `mask_summary`, `parameters`가 포함된다. 모든 mask는 원본과 같은 `(H, W)`의 `uint8`이며 `1=해당`, `0=비해당`이다. `include_debug_components=True`이면 `debug_components`에 die 내부로 제외된 `D`와 형상/면적/대비에서 탈락한 `R`도 들어간다.
+
+| 반환 키 | 의미 |
+| --- | --- |
+| `particles` | 최종 통과 particle 목록. 각 항목은 `id`, `center_px`, `bbox_px`, `area_px`, `aspect_ratio`, `fill_ratio`, `mean_intensity`, `local_contrast`, `radius_from_wafer_center_px`를 가진다. |
+| `ring_mask` | 설정한 wafer 외곽 ring. |
+| `die_exclusion_mask` | partial die를 포함해 particle 검사에서 제외한 die 영역. |
+| `inspection_mask` | ring 중 die 밖에 남아 실제 검사한 픽셀. |
+| `bright_mask` | 검사 영역에서 `white_threshold`를 넘긴 필터 전 후보. |
+| `die_bright_mask` | 밝지만 die 내부라 제외된 픽셀. |
+| `mask_summary` | 각 영역 pixel 수, 필터 전 후보 수, 최종 particle 수. |
+| `parameters` | 이번 결과에 실제 적용한 모든 particle 파라미터. |
+| `inspection_radii_px` | wafer 중심 기준 ring의 안쪽/바깥쪽 반지름(px). |
+| `debug_components` | `D=die_excluded`, `R=rejected` blob 목록. 디버그 옵션이 꺼지면 `None`. |
 
 진단 이미지의 표시는 다음과 같다.
 

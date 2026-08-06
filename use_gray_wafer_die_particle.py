@@ -2559,6 +2559,23 @@ def inspect_edge_particles(dm: WaferDieMap, *,
 
     partial edge die까지 포함한 모든 die cell을 threshold 이전에 mask한다. 따라서
     die 내부의 밝은 회로 패턴과 wafer edge에 걸친 die는 particle 후보가 될 수 없다.
+
+    Returns
+    -------
+    dict
+        ``particles``에는 최종 통과 particle 목록이 들어간다. 각 항목은 ``id``,
+        ``center_px`` (sub-pixel 중심), ``bbox_px`` (x1, y1, x2, y2), ``area_px``,
+        ``aspect_ratio``, ``fill_ratio``, ``mean_intensity``, ``local_contrast``,
+        ``radius_from_wafer_center_px``를 가진다. mask 항목은 모두 원본과 같은
+        `(H, W)` 크기의 uint8 배열이며 1=해당 조건 참, 0=거짓이다.
+
+        - ``ring_mask``: 설정한 wafer 외곽 ring
+        - ``die_exclusion_mask``: particle 검사에서 제외할 전체 die 영역
+        - ``inspection_mask``: 실제 후보 검사가 허용된 픽셀
+        - ``bright_mask``: threshold를 통과한 검사 후보 픽셀
+        - ``die_bright_mask``: die 내부여서 제외된 밝은 픽셀
+        - ``mask_summary``: 위 mask의 pixel 수와 최종 개수 요약
+        - ``debug_components``: 옵션을 켰을 때 D(die 내부 제외), R(필터 탈락) 목록
     """
     if edge_inner_margin_px <= edge_outer_margin_px:
         raise ValueError("edge_inner_margin_px must be larger than edge_outer_margin_px")
@@ -2607,10 +2624,10 @@ def inspect_edge_particles(dm: WaferDieMap, *,
         x, y, box_w, box_h, area = (int(value) for value in stats[label])
         cx, cy = (float(value) for value in centroids[label])
         record: Dict[str, Any] = {
-            "center_px": (round(cx, 2), round(cy, 2)),
-            "bbox_px": (x, y, x + box_w, y + box_h),
-            "area_px": area,
-            "reason": reason,
+            "center_px": (round(cx, 2), round(cy, 2)),  # blob 중심 (x, y, px)
+            "bbox_px": (x, y, x + box_w, y + box_h),    # 좌상/우하 bounding box (px)
+            "area_px": area,                             # 연결 성분 실제 면적 (pixel 수)
+            "reason": reason,                            # "area" | "shape" | "background" | "contrast"
         }
         if local_contrast is not None:
             record["local_contrast"] = round(local_contrast, 2)
@@ -2654,15 +2671,16 @@ def inspect_edge_particles(dm: WaferDieMap, *,
 
         cx, cy = (float(value) for value in centroids[label])
         particles.append({
-            "id": len(particles) + 1,
-            "center_px": (round(cx, 2), round(cy, 2)),
-            "bbox_px": (x, y, x + box_w, y + box_h),
-            "area_px": area,
-            "aspect_ratio": round(aspect_ratio, 3),
-            "fill_ratio": round(fill_ratio, 3),
-            "mean_intensity": round(mean_intensity, 2),
-            "local_contrast": round(local_contrast, 2),
+            "id": len(particles) + 1,  # 최종 통과 순번. overlay의 P 번호와 동일한 순서.
+            "center_px": (round(cx, 2), round(cy, 2)),  # particle 무게중심 (x, y, px)
+            "bbox_px": (x, y, x + box_w, y + box_h),    # particle 사각 영역 (x1, y1, x2, y2, px)
+            "area_px": area,                             # particle에 속한 밝은 pixel 개수
+            "aspect_ratio": round(aspect_ratio, 3),      # 긴 변 / 짧은 변. 1에 가까울수록 원형/정사각형.
+            "fill_ratio": round(fill_ratio, 3),          # area / bbox 면적. 낮으면 가는 선/빈 테두리 가능성.
+            "mean_intensity": round(mean_intensity, 2),  # component 내부 평균 gray 값 (0~255)
+            "local_contrast": round(local_contrast, 2),  # component 평균 - 주변 검사 영역 median gray
             "radius_from_wafer_center_px": round(float(np.hypot(cx - dm.wafer_cx, cy - dm.wafer_cy)), 2),
+                                                        # wafer 중심에서 particle 중심까지 거리 (px)
         })
 
     die_bright_components: List[Dict[str, Any]] = []
@@ -2674,29 +2692,32 @@ def inspect_edge_particles(dm: WaferDieMap, *,
                 continue
             cx, cy = (float(value) for value in die_centroids[label])
             die_bright_components.append({
-                "center_px": (round(cx, 2), round(cy, 2)),
-                "bbox_px": (x, y, x + box_w, y + box_h),
-                "area_px": area,
-                "reason": "die_excluded",
+                "center_px": (round(cx, 2), round(cy, 2)),  # die 내부 밝은 blob 중심 (px)
+                "bbox_px": (x, y, x + box_w, y + box_h),    # die 내부 blob bbox (px)
+                "area_px": area,                             # die 내부 밝은 pixel 수
+                "reason": "die_excluded",                   # D 표시: particle 검사가 아닌 die 내부 패턴
             })
 
     return {
-        "die_map": dm,
-        "particles": particles,
-        "ring_mask": ring_mask,
-        "die_exclusion_mask": die_mask,
-        "inspection_mask": inspection_mask,
-        "bright_mask": bright_mask,
-        "die_bright_mask": die_bright_mask,
+        "die_map": dm,                         # 입력받은 WaferDieMap. 모든 결과 좌표의 기준.
+        "particles": particles,                 # 모든 필터를 통과한 particle dict 목록.
+        "ring_mask": ring_mask,                 # uint8 (H,W): wafer 외곽 ring=1, 나머지=0.
+        "die_exclusion_mask": die_mask,         # uint8 (H,W): partial die를 포함해 검사 금지인 die=1.
+        "inspection_mask": inspection_mask,     # uint8 (H,W): ring 중 die 밖의 실제 검사 허용 영역=1.
+        "bright_mask": bright_mask,             # uint8 (H,W): 검사 허용 영역에서 threshold 이상인 후보=1.
+        "die_bright_mask": die_bright_mask,     # uint8 (H,W): die 내부여서 제외된 밝은 pixel=1.
         "mask_summary": {
             "ring_pixels": int(ring_mask.sum()),
             "die_excluded_pixels_in_ring": int(((ring_mask > 0) & (die_mask > 0)).sum()),
-            "inspection_pixels": int(inspection_mask.sum()),
+                                                        # ring 안이지만 die 내부라 검사에서 빠진 pixel 수.
+            "inspection_pixels": int(inspection_mask.sum()),  # 실제 검사 가능 pixel 수.
             "bright_pixels_inside_die": int(die_bright_mask.sum()),
+                                                        # particle가 아니라고 제외한 die 내부 밝은 pixel 수.
             "bright_components_in_inspection": int(num_labels - 1),
-            "accepted_particles": len(particles),
+                                                        # 필터 적용 전 threshold 후보 blob 개수.
+            "accepted_particles": len(particles),     # 면적/형상/배경/대비까지 통과한 최종 개수.
         },
-        "parameters": {
+        "parameters": {  # 이번 결과에 실제 적용한 입력 파라미터. 재현/로그 저장용.
             "edge_inner_margin_px": edge_inner_margin_px,
             "edge_outer_margin_px": edge_outer_margin_px,
             "ring_guard_px": ring_guard_px,
@@ -2709,12 +2730,12 @@ def inspect_edge_particles(dm: WaferDieMap, *,
             "min_local_contrast": min_local_contrast,
         },
         "inspection_radii_px": {
-            "inner": round(inner_radius, 2),
-            "outer": round(outer_radius, 2),
+            "inner": round(inner_radius, 2),  # wafer 중심 기준 ring 안쪽 반지름 (px)
+            "outer": round(outer_radius, 2),  # wafer 중심 기준 ring 바깥쪽 반지름 (px)
         },
         "debug_components": {
-            "die_excluded": die_bright_components,
-            "rejected": rejected_components,
+            "die_excluded": die_bright_components,  # D: die 내부라 무조건 제외된 밝은 blob 목록.
+            "rejected": rejected_components,         # R: 검사 영역 안이지만 각 reason에서 탈락한 blob 목록.
         } if include_debug_components else None,
     }
 
@@ -2727,7 +2748,8 @@ def inspect_edge_particles_from_image(image: Union[str, Path, np.ndarray], *,
 
     주 사용 방식은 ``dm = build_die_map(image); inspect_edge_particles(dm)``이다.
     기존처럼 이미지 한 장만 가진 상황에서는 이 함수를 사용한다. 함수명에
-    ``from_image``을 넣어 dm 기반 API와 혼동하지 않도록 구분했다.
+    ``from_image``을 넣어 dm 기반 API와 혼동하지 않도록 구분했다. 반환값의 키와
+    의미는 ``inspect_edge_particles(dm, ...)``와 완전히 같다.
     """
     dm = build_die_map(
         image,
@@ -2740,7 +2762,15 @@ def inspect_edge_particles_from_image(image: Union[str, Path, np.ndarray], *,
 
 def render_edge_particle_overlay(dm: WaferDieMap,
                                  inspection: Dict[str, Any]) -> np.ndarray:
-    """`dm` 좌표계에서 검사 ring과 최종 particle을 그린다."""
+    """`dm` 좌표계에서 검사 ring과 최종 particle을 그린다.
+
+    Returns
+    -------
+    np.ndarray
+        `dm.aligned_image`와 같은 `(H, W, 3)` BGR uint8 이미지. 하늘색 원은 검사
+        ring 경계, 빨간 box/cross와 숫자는 최종 통과 particle이다. 파일 저장은 호출부에서
+        ``cv2.imwrite(path, overlay)``로 수행한다.
+    """
     if dm.aligned_image is None:
         raise ValueError("dm.aligned_image is required; create dm with build_die_map()")
     canvas = _load_bgr(dm.aligned_image).copy()
@@ -2762,7 +2792,14 @@ def render_edge_particle_overlay(dm: WaferDieMap,
 def render_edge_particle_diagnostic_overlay(dm: WaferDieMap,
                                             inspection: Dict[str, Any],
                                             max_debug_components: int = 12) -> np.ndarray:
-    """`dm` 좌표계에 검사/제외/탈락/통과 영역을 상세하게 그린다."""
+    """`dm` 좌표계에 검사/제외/탈락/통과 영역을 상세하게 그린다.
+
+    Returns
+    -------
+    np.ndarray
+        `dm.aligned_image`와 같은 `(H, W, 3)` BGR uint8 이미지. 주황은 die 제외,
+        초록은 실제 검사 영역, D는 die 내부 밝은 blob, R은 필터 탈락, P는 최종 particle이다.
+    """
     if dm.aligned_image is None:
         raise ValueError("dm.aligned_image is required; create dm with build_die_map()")
     canvas = _load_bgr(dm.aligned_image).copy()
@@ -2824,7 +2861,13 @@ def evaluate_bw_noisy_wafer(image_path: Union[str, Path],
                             grid_method: str = "std",
                             angle_align_method: str = "die_render",
                             clean: bool = True) -> Dict[str, Any]:
-    """Standalone helper that runs build_die_map and returns a JSON-ready summary."""
+    """Standalone helper that runs build_die_map and returns a JSON-ready summary.
+
+    반환 dict의 ``num_dies``는 포함된 die 수, ``pitch_x/y``는 float pitch(px),
+    ``rotation_deg``는 적용한 보정각(deg), ``angle_confidence``와 ``angle_agree``는
+    각도 신뢰도/교차검증 결과, ``wafer_center``와 ``wafer_r``는 wafer geometry(px),
+    ``overlay``는 저장한 BGR overlay 파일 경로다.
+    """
     image_path = Path(image_path)
     if not image_path.exists():
         raise FileNotFoundError(str(image_path))
@@ -2842,16 +2885,16 @@ def evaluate_bw_noisy_wafer(image_path: Union[str, Path],
     render_overlay_portable(image_path, die_map, overlay_path)
 
     return {
-        "image": image_path.name,
-        "num_dies": die_map.num_dies,
-        "pitch_x": round(die_map.pitch_x, 3),
-        "pitch_y": round(die_map.pitch_y, 3),
-        "rotation_deg": round(die_map.rotation_deg, 4),
-        "angle_confidence": round(die_map.angle_confidence, 3),
-        "angle_agree": bool(die_map.angle_agree),
-        "wafer_center": [die_map.wafer_cx, die_map.wafer_cy],
-        "wafer_r": die_map.wafer_r,
-        "overlay": str(overlay_path),
+        "image": image_path.name,                         # 입력 파일명.
+        "num_dies": die_map.num_dies,                      # 최종 die map에 포함된 die 수.
+        "pitch_x": round(die_map.pitch_x, 3),              # 가로 die pitch (px, float).
+        "pitch_y": round(die_map.pitch_y, 3),              # 세로 die pitch (px, float).
+        "rotation_deg": round(die_map.rotation_deg, 4),    # 적용한 회전 보정 각도 (deg).
+        "angle_confidence": round(die_map.angle_confidence, 3),  # projection/FFT 기반 각도 신뢰도 0~1.
+        "angle_agree": bool(die_map.angle_agree),          # 두 각도 측정이 합의했는지.
+        "wafer_center": [die_map.wafer_cx, die_map.wafer_cy],  # wafer 중심 (x, y, px).
+        "wafer_r": die_map.wafer_r,                         # wafer 반지름 (px).
+        "overlay": str(overlay_path),                       # 저장된 die overlay PNG 경로.
     }
 
 
