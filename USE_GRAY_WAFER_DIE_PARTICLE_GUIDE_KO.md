@@ -55,11 +55,13 @@ print(found["die_index"], found["die_center_px"], found["is_edge"])
 | 파라미터 | 기본값 | 용도 |
 | --- | --- | --- |
 | `grid_method` | `"corner"` | grid 추출 방식. Gray wafer 검증에는 `"std"`를 사용했다. |
+| `min_pitch`, `max_pitch` | `50`, `None` | 허용할 pitch 범위(px). `max_pitch=70`이면 `pitch_x/y`는 70을 넘지 않는다. |
+| `corner_x0_mode` | `"auto"` | `corner` 방식에서 강하고 넓은 세로 흰 노이즈를 감지하면 wafer 중심 방향으로 `pitch_x/2` 이동한다. `nearest`는 보정 끔, `half_pitch`는 강제 보정이다. |
 | `notch_align` | `True` | 회전 보정 사용 여부. 이미 정렬된 Gray 이미지면 `False`가 안전하다. |
 | `angle_align_method` | `"die_render"` | `die_render`, `notch`, `vertical_line`, `none` 중 선택한다. |
 | `clip_partial_edge` | `True` | wafer 외곽에 걸친 die를 map에서 제거한다. |
 | `edge_clip_margin_px` | 자동 | partial 판정 safety margin. `-1`이면 작은 pitch의 10%를 사용한다. |
-| `edge_mode` | `"circle"` | `circle`은 partial die, `ring`은 grid 최외곽, `both`는 둘 중 하나를 edge로 표시한다. |
+| `edge_mode` | `"both"` | `circle`은 partial die, `ring`은 grid 최외곽, `both`는 둘 중 하나를 edge로 표시한다. `clip_partial_edge=True`라면 `circle`만 사용할 때 edge가 0개인 것이 정상이다. |
 | `with_crops` | `False` | `True`면 각 die 항목에 crop 이미지를 함께 넣는다. |
 | `offset_x`, `offset_y` | `0` | die crop 중심을 이동한다. |
 | `margin_x`, `margin_y` | `0` | die crop을 사방으로 확장한다. |
@@ -115,7 +117,7 @@ debug_image = render_edge_particle_diagnostic_overlay(dm, inspection)
 cv2.imwrite("edge_particle_debug.png", debug_image)
 ```
 
-Particle 검사는 흰색 전체를 검출하지 않는다. 기존 흐름처럼 먼저 `dm = build_die_map(image, ...)`을 만들고, 그 `dm`을 모든 particle 함수에 전달한다. 먼저 wafer 외곽의 조절 가능한 annulus(ring)를 만들고, 그 안에서도 partial die를 포함한 모든 die 사각형을 제외한다. 남은 영역의 밝은 blob만 면적, 가로세로 비, 채움 비율, 주변 대비 기준을 모두 통과해야 particle이 된다.
+Particle 검사는 흰색 전체를 검출하지 않는다. 기존 흐름처럼 먼저 `dm = build_die_map(image, ...)`을 만들고, 그 `dm`을 모든 particle 함수에 전달한다. `edge_inner_margin_px=75`, `edge_outer_margin_px=10`이면 wafer 원 외곽에서 10px 안쪽부터 75px 안쪽까지의 circle ring만 검사한다. 그 안에서도 partial die를 포함한 모든 die 사각형을 제외한다. 남은 영역의 밝은 blob만 면적, 가로세로 비, 채움 비율, 주변 대비 기준을 모두 통과해야 particle이 된다.
 
 이미지만 있고 `dm`을 아직 만들지 않은 경우에는 보조 함수 `inspect_edge_particles_from_image(image, ...)`를 사용할 수 있다. 일반 사용과 overlay 좌표 일관성을 위해서는 `dm` 방식이 권장된다.
 

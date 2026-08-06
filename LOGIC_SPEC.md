@@ -155,9 +155,9 @@ V5에서는 **두 정의를 항상 함께 계산하고 저장**합니다.
 
 | edge_mode | is_edge 의미 |
 |-----------|-------------|
-| `"circle"` (기본값) | `is_edge_partial` 과 동일 |
+| `"circle"` | `is_edge_partial` 과 동일 |
 | `"ring"` | `is_edge_ring` 과 동일 |
-| `"both"` | `is_edge_partial OR is_edge_ring` |
+| `"both"` (기본값) | `is_edge_partial OR is_edge_ring` |
 
 `is_edge_partial`, `is_edge_ring` 은 `edge_mode`와 무관하게 **항상 저장**됩니다.  
 `locate_die()` 결과에도 세 값이 모두 반환됩니다.

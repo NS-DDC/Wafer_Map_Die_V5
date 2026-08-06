@@ -32,7 +32,7 @@
 ```python
 from wafer_die_map_v5 import build_die_map, locate_die
 
-# 기본 사용 (die_render 각도 정렬, edge_mode="circle")
+# 기본 사용 (die_render 각도 정렬, edge_mode="both")
 dm = build_die_map("wafer.jpg")
 
 # 각도 정렬 방식을 notch로 변경
@@ -66,7 +66,7 @@ print(r["is_edge_ring"])    # 최외곽 격자 링 다이 여부
 |----------|--------|------|
 | `image` | — | 파일 경로(str) 또는 numpy 배열 |
 | `angle_align_method` | `"die_render"` | 각도 정렬 방식: `"die_render"` \| `"notch"` \| `"vertical_line"` \| `"none"` |
-| `edge_mode` | `"circle"` | 엣지 정의: `"circle"` \| `"ring"` \| `"both"` |
+| `edge_mode` | `"both"` | 엣지 정의: `"circle"` \| `"ring"` \| `"both"`. partial die를 clip하면 `circle`은 0개일 수 있어 `both`가 기본이다. |
 
 **반환값 `WaferDieMap` 주요 속성:**
 

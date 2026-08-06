@@ -418,9 +418,21 @@ def _median_band_spacing(bands: List[Tuple[float, int, int, float]],
                          fallback_pitch: float,
                          min_pitch: int,
                          max_pitch: Optional[int]) -> float:
-    """검출된 street band 사이 간격의 median 으로 pitch 를 보정한다."""
+    """검출된 street band 사이 간격의 median 으로 pitch 를 보정한다.
+
+    ``max_pitch``는 권장값이 아니라 hard upper bound이다. band가 부족할 때도
+    fallback을 그대로 반환하지 않고 같은 상한을 적용해야, `max_pitch=70`인데
+    결과 pitch가 100 이상이 되는 문제가 생기지 않는다.
+    """
+    if max_pitch is not None and max_pitch < min_pitch:
+        raise ValueError("max_pitch must be greater than or equal to min_pitch")
+
+    def _bounded(value: float) -> float:
+        value = max(float(min_pitch), float(value))
+        return min(value, float(max_pitch)) if max_pitch is not None else value
+
     if len(bands) < 3:
-        return float(fallback_pitch)
+        return _bounded(fallback_pitch)
 
     centers = np.array(sorted(band[0] for band in bands), dtype=np.float64)
     diffs = np.diff(centers)
@@ -428,8 +440,40 @@ def _median_band_spacing(bands: List[Tuple[float, int, int, float]],
     lower = float(min_pitch)
     diffs = diffs[(diffs >= lower) & (diffs <= upper)]
     if diffs.size == 0:
-        return float(fallback_pitch)
-    return float(np.median(diffs))
+        return _bounded(fallback_pitch)
+    return _bounded(float(np.median(diffs)))
+
+
+def _choose_corner_x_origin(x_bands: List[Tuple[float, int, int, float]],
+                            wafer_cx: float, pitch_x: float,
+                            mode: str = "auto") -> Tuple[float, bool]:
+    """Choose x0 while avoiding a strong/broad vertical white-noise band.
+
+    A real GV street can be thinner and weaker than a vertical white-noise band.
+    In ``auto`` mode, when the nearest bright band is unusually wide or strong,
+    it is treated as a die-center-like noise band and the expected grid corner
+    is moved by half a pitch toward the wafer center.  ``nearest`` disables this
+    correction; ``half_pitch`` always applies it when a direction is available.
+    """
+    selected = _choose_nearest_band(x_bands, wafer_cx)
+    mode = str(mode).lower().strip()
+    if mode not in ("auto", "nearest", "half_pitch"):
+        raise ValueError("corner_x0_mode must be 'auto', 'nearest', or 'half_pitch'")
+    if mode == "nearest":
+        return float(selected[0]), False
+
+    widths = np.array([max(1.0, band[2] - band[1]) for band in x_bands], dtype=np.float64)
+    strengths = np.array([max(1e-6, band[3]) for band in x_bands], dtype=np.float64)
+    selected_width = max(1.0, selected[2] - selected[1])
+    median_width = float(np.median(widths))
+    median_strength = float(np.median(strengths))
+    noise_like = (selected_width >= max(5.0, median_width * 1.8, pitch_x * 0.14)
+                  or selected[3] >= max(1e-6, median_strength * 1.6))
+    should_shift = mode == "half_pitch" or (mode == "auto" and noise_like)
+    toward_center = float(wafer_cx - selected[0])
+    if not should_shift or abs(toward_center) < max(2.0, pitch_x * 0.08):
+        return float(selected[0]), False
+    return float(selected[0] + math.copysign(pitch_x * 0.5, toward_center)), True
 
 
 def detect_corner_grid(image_bgr: np.ndarray,
@@ -446,7 +490,8 @@ def detect_corner_grid(image_bgr: np.ndarray,
                        min_width: int = 3,
                        threshold_ratio: float = 0.35,
                        sigma: float = 1.8,
-                       min_projection: float = 5.0
+                       min_projection: float = 5.0,
+                       corner_x0_mode: str = "auto"
                        ) -> Tuple[float, float, int, int]:
     """Noise wafer 의 실제 4-way 코너 교차점을 직접 찾는 Grid 검출.
 
@@ -502,13 +547,13 @@ def detect_corner_grid(image_bgr: np.ndarray,
     y_bands = _find_projection_bands(
         y_profile, y1, min_width, threshold_ratio, sigma, min_projection)
 
-    # x 축은 wafer 원 검출 중심이 1 px 정도 흔들릴 수 있어 가장 가까운 세로선을 선택한다.
-    # y 축은 중심 바로 위의 가로 street 가 grid origin 이므로 previous band 를 선택한다.
-    x_band = _choose_nearest_band(x_bands, float(wafer_cx))
-    y_band = _choose_previous_band(y_bands, float(wafer_cy))
     pitch_x = _median_band_spacing(x_bands, pitch_x_rough, min_pitch, max_pitch)
     pitch_y = _median_band_spacing(y_bands, pitch_y_rough, min_pitch, max_pitch)
-    return pitch_x, pitch_y, int(round(x_band[0])), int(round(y_band[0]))
+    # y 축은 중심 바로 위의 가로 street가 grid origin이다.
+    # x 축은 세로 흰 노이즈가 GV street보다 강한 경우가 있어 별도 보정한다.
+    x0, _ = _choose_corner_x_origin(x_bands, float(wafer_cx), pitch_x, corner_x0_mode)
+    y_band = _choose_previous_band(y_bands, float(wafer_cy))
+    return pitch_x, pitch_y, int(round(x0)), int(round(y_band[0]))
 
 
 def detect_grid(image_bgr: np.ndarray,
@@ -517,6 +562,7 @@ def detect_grid(image_bgr: np.ndarray,
                 roi_ratio: float = 0.6,
                 min_pitch: int = 50,
                 max_pitch: Optional[int] = None,
+                corner_x0_mode: str = "auto",
                 die_template_bgr: Optional[np.ndarray] = None,
                 line_hue: Optional[int] = None,
                 hue_delta: int = 20,
@@ -531,7 +577,8 @@ def detect_grid(image_bgr: np.ndarray,
     if method in ("corner", "corner_grid", "street"):
         return detect_corner_grid(
             image_bgr, wafer_cx, wafer_cy, wafer_r,
-            min_pitch=min_pitch, max_pitch=max_pitch)
+            min_pitch=min_pitch, max_pitch=max_pitch,
+            corner_x0_mode=corner_x0_mode)
 
     half = int(wafer_r * roi_ratio)
     x1 = max(wafer_cx - half, 0)
@@ -645,7 +692,10 @@ DEFAULT_EDGE_MARGIN = 1.0        # die 포함 기준: 중심거리 <= r * 이값
 #   "circle" : is_edge = is_edge_partial (die 사각형이 wafer 원 밖으로 일부라도 나감)
 #   "ring"   : is_edge = is_edge_ring    (die 격자에서 8방향 이웃이 다 차 있지 않은 최외곽)
 #   "both"   : is_edge = is_edge_partial OR is_edge_ring
-DEFAULT_EDGE_MODE = "circle"
+# clip_partial_edge=True이면 partial die는 결과 map에서 제거되므로 "circle"만 쓰면
+# is_edge가 0개가 될 수 있다. 기본 "both"는 남아 있는 최외곽 die(is_edge_ring)를
+# 항상 edge로 표시하면서, partial die를 남기는 설정에서는 circle edge도 함께 표시한다.
+DEFAULT_EDGE_MODE = "both"
 
 # crop 영역 보정/확장 (die 사이 street 포함, 미세 정렬 오차 보정용)
 DEFAULT_OFFSET_X = 0   # crop 중심 X 위치 보정 (px). +면 오른쪽, -면 왼쪽으로 이동
@@ -1959,6 +2009,9 @@ def validate_quadrant_edges(dies: List[Dict[str, Any]],
 def build_die_map(image: Union[str, Path, np.ndarray],
                   *,
                   grid_method: str = DEFAULT_GRID_METHOD,
+                  min_pitch: int = 50,
+                  max_pitch: Optional[int] = None,
+                  corner_x0_mode: str = "auto",
                   pixel_per_unit: int = DEFAULT_PIXEL_PER_UNIT,
                   include_edge: bool = True,
                   edge_margin: float = DEFAULT_EDGE_MARGIN,
@@ -1986,6 +2039,11 @@ def build_die_map(image: Union[str, Path, np.ndarray],
     ----------
     image            : wafer 이미지 경로(str/Path) 또는 BGR ndarray
     grid_method      : 격자 검출 방식 "corner"(기본) | "hybrid" | "std" | "color"
+    min_pitch/max_pitch: 허용할 die pitch 범위(px). max_pitch는 hard upper bound이다.
+                          예: `max_pitch=70`이면 반환 pitch_x/y도 70을 넘지 않는다.
+    corner_x0_mode   : corner 방식의 x0 보정. "auto"(기본)는 강하고 넓은 세로 흰 노이즈를
+                       감지하면 wafer 중심 쪽으로 pitch_x/2 이동한다. "nearest"는 보정 끔,
+                       "half_pitch"는 항상 이동한다.
     pixel_per_unit   : 실측 좌표 환산 (px/unit)
     include_edge     : True 면 웨이퍼 원 안 die 전부 포함(가장자리 잘린 die 포함).
     edge_margin      : die 포함 기준 = (중심거리 <= r * edge_margin).
@@ -1996,7 +2054,7 @@ def build_die_map(image: Union[str, Path, np.ndarray],
     notch_align      : True(기본) 면 angle_align_method 로 회전(angle) 보정.
     notch_ref_deg    : notch 의 정상 위치 (90 = 아래쪽/6시 방향).
     angle_align_method: "die_render"(V5 기본) | "notch" | "vertical_line" | "none".
-    edge_mode        : ★ EDGE 판정 기준. "circle"(기본,부분 die) | "ring"(격자 최외곽) | "both".
+    edge_mode        : ★ EDGE 판정 기준. "circle"(부분 die) | "ring"(격자 최외곽) | "both"(기본).
                        각 die 에는 is_edge_partial / is_edge_ring 가 모두 저장되고,
                        is_edge 는 edge_mode 가 가리키는 값이 된다.
     clean            : ★[기능4] True 면 시작 시 wafer 원판 밖을 검정으로(외부노이즈 제거).
@@ -2071,7 +2129,11 @@ def build_die_map(image: Union[str, Path, np.ndarray],
             raise FileNotFoundError(str(die_template_path))
     pitch_x, pitch_y, x0, y0 = detect_grid(
         img, wafer_cx, wafer_cy, wafer_r,
-        method=grid_method, die_template_bgr=die_template_bgr)
+        method=grid_method,
+        min_pitch=min_pitch,
+        max_pitch=max_pitch,
+        corner_x0_mode=corner_x0_mode,
+        die_template_bgr=die_template_bgr)
 
     die_w = int(round(pitch_x))
     die_h = int(round(pitch_y))
@@ -2340,9 +2402,10 @@ def locate_die(die_map: WaferDieMap,
 #   dm = build_die_map(aligned, angle_align_method="none")  # 이미 정렬 -> 보정 OFF
 #
 #   # 5) ★ EDGE die 구분 — is_edge 기준 선택 (둘 다 entry 에 저장됨)
-#   dm = build_die_map("wafer.jpg", edge_mode="circle")  # 부분 die(원 밖) / 기본
-#   dm = build_die_map("wafer.jpg", edge_mode="ring")    # 격자 최외곽 줄
-#   dm = build_die_map("wafer.jpg", edge_mode="both")    # 둘 중 하나라도면 edge
+#   # clip_partial_edge=True이면 부분 die는 제거되므로 circle만 쓰면 edge=0개가 정상입니다.
+#   dm = build_die_map("wafer.jpg", edge_mode="circle", clip_partial_edge=False)  # 부분 die를 남길 때
+#   dm = build_die_map("wafer.jpg", edge_mode="ring")    # clip 후 남은 격자 최외곽 줄
+#   dm = build_die_map("wafer.jpg", edge_mode="both")    # 기본/권장: 둘 중 하나라도 edge
 #   r = locate_die(dm, point=(5499, 4700))
 #   print(r["is_edge"], r["is_edge_partial"], r["is_edge_ring"], r["edge_mode"])
 

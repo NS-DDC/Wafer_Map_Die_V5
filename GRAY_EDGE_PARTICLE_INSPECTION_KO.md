@@ -10,6 +10,8 @@
 
 기존 방식대로 먼저 `dm`을 만들고, particle 함수에는 `dm`을 넣는다. `dm.aligned_image`를 기준으로 검사하므로 회전 보정 뒤에도 die 좌표와 particle 좌표가 일치한다.
 
+`edge_inner_margin_px=75`, `edge_outer_margin_px=10`은 wafer 원 외곽에서 10px 안쪽부터 75px 안쪽까지의 **원형 ring**만 검사한다. `edge_mode="both"`는 die edge 표기용이고, particle 검사의 원형 범위는 이 두 margin 파라미터로 정한다.
+
 ```python
 import cv2
 from use_gray_wafer_die_particle import build_die_map, inspect_edge_particles
