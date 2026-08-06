@@ -638,11 +638,24 @@ def clip_die(image: np.ndarray, center_x: int, center_y: int,
 # #############################################################################
 
 # --- 사용자 조정 기본값 -----------------------------------------------------
+#
+# 이 블록은 사용자가 이미지 종류에 맞춰 가장 먼저 조절해도 되는 값이다.
+# 함수 호출 때 같은 이름의 인자를 주면 여기의 기본값을 바꾸지 않고도 한 번만 시험할 수 있다.
+# 검증이 끝난 값만 이 기본값에 반영하는 것을 권장한다.
+#
+# [수정하지 않는 편이 좋은 값]
+# - build_die_map 내부의 float pitch 경계 계산: 정수 pitch를 반복 누적하면 wafer 중심에서
+#   멀어질수록 die 위치가 밀린다. 현재는 각 경계를 float 식으로 독립 계산한 뒤 한 번만 반올림한다.
+# - inspect_edge_particles의 partial die 포함 mask: die 내부의 밝은 회로선을 particle로
+#   잘못 검출하지 않기 위한 장치이므로, 일반 die map의 edge clip과 분리해 유지해야 한다.
+#
 DEFAULT_GRID_METHOD = "corner"   # "corner"(권장, street 선으로 코너 직접 검출) | "hybrid" | "std" | "color"
-DEFAULT_PIXEL_PER_UNIT = 32      # 실측 좌표 환산 (px / unit)
-DEFAULT_EDGE_MARGIN = 1.0        # die 포함 기준: 중심거리 <= r * 이값.
-DEFAULT_CLIP_PARTIAL_EDGE = True # wafer 밖을 걸치는 die는 map에서 제외
-                                 #   1.0=원 안의 die 전부(EDGE 포함), 0.98=가장자리 제외
+                                 # Gray wafer처럼 die 내부 무늬가 강하면 "std"가 더 안정적일 수 있다.
+DEFAULT_PIXEL_PER_UNIT = 32      # 실측 좌표 환산 (px / unit). real_coord의 단위만 바뀌며 grid 검출에는 영향 없음.
+DEFAULT_EDGE_MARGIN = 1.0        # die 중심 포함 기준: 중심거리 <= wafer_r * 이 값.
+                                 # 작게 하면 가장자리 die가 더 일찍 빠진다. 1.0보다 크게 하면 wafer 밖 후보도 늘 수 있다.
+DEFAULT_CLIP_PARTIAL_EDGE = True # True면 사각형의 모서리 하나라도 safety circle 밖인 die를 결과 map에서 제외.
+                                 # False는 edge particle 검사처럼 partial die까지 마스크해야 할 때만 사용한다.
 
 # --- EDGE die 판정 방식 (둘 다 계산되어 entry 에 저장; is_edge 가 무엇을 가리킬지 선택) ---
 #   "circle" : is_edge = is_edge_partial (die 사각형이 wafer 원 밖으로 일부라도 나감)
@@ -651,10 +664,10 @@ DEFAULT_CLIP_PARTIAL_EDGE = True # wafer 밖을 걸치는 die는 map에서 제�
 DEFAULT_EDGE_MODE = "circle"
 
 # crop 영역 보정/확장 (die 사이 street 포함, 미세 정렬 오차 보정용)
-DEFAULT_OFFSET_X = 0   # crop 중심 X 위치 보정 (px). +면 오른쪽, -면 왼쪽으로 이동
-DEFAULT_OFFSET_Y = 0   # crop 중심 Y 위치 보정 (px). +면 아래쪽, -면 위쪽으로 이동
-DEFAULT_MARGIN_X = 0   # 좌/우로 각각 더 포함할 영역 (px). die 폭이 +2*margin_x 만큼 커짐
-DEFAULT_MARGIN_Y = 0   # 상/하로 각각 더 포함할 영역 (px). die 높이가 +2*margin_y 만큼 커짐
+DEFAULT_OFFSET_X = 0   # crop 중심 X 위치 보정 (px). +면 오른쪽, -면 왼쪽으로 이동. map 좌표/인덱스는 바뀌지 않는다.
+DEFAULT_OFFSET_Y = 0   # crop 중심 Y 위치 보정 (px). +면 아래쪽, -면 위쪽으로 이동. map 좌표/인덱스는 바뀌지 않는다.
+DEFAULT_MARGIN_X = 0   # 좌/우로 각각 더 포함할 영역 (px). die 폭이 +2*margin_x 만큼 커짐. street 포함이 필요할 때만 증가.
+DEFAULT_MARGIN_Y = 0   # 상/하로 각각 더 포함할 영역 (px). die 높이가 +2*margin_y 만큼 커짐. 이웃 die까지 포함되지 않게 주의.
 
 # --- Notch 회전(angle) 보정 ---------------------------------------------------
 DEFAULT_NOTCH_ALIGN = True       # build_die_map 시작 시 notch 로 회전 보정 (notch 없으면 자동 skip)
@@ -804,7 +817,12 @@ def _resolve_edge_flag(is_partial: bool, is_ring: bool, edge_mode: str) -> bool:
 
 
 def _load_bgr(image: Union[str, Path, np.ndarray]) -> np.ndarray:
-    """경로(str/Path) 또는 BGR ndarray 를 받아 BGR 이미지로 반환."""
+    """경로 또는 Gray/BGR/BGRA ndarray를 OpenCV BGR 3채널로 통일한다.
+
+    공개 함수는 1채널 Gray 배열을 직접 받는 것을 지원한다. OpenCV의 색상/그리기
+    함수는 상황에 따라 BGR 3채널을 요구하므로, 이 경계에서만 채널을 정규화한다.
+    이 처리를 우회하면 Gray 입력에서 ``cv_8uc3`` 오류가 다시 발생할 수 있다.
+    """
     if isinstance(image, np.ndarray):
         if image.size == 0:
             raise ValueError("image ndarray must not be empty")
@@ -2027,6 +2045,11 @@ def build_die_map(image: Union[str, Path, np.ndarray],
     WaferDieMap (V2 필드: notch_center_px, angle_verified, die_grid_angle_resid,
                  quadrant_report. aligned_image 는 항상 채워짐[기능5]. edge_mode 저장.)
     """
+    # 수정 순서 권장:
+    # 1) grid_method/notch_align로 pitch와 격자 위치를 먼저 맞춘다.
+    # 2) edge die만 문제면 edge_clip_margin_px를 조절한다.
+    # 3) crop만 어긋나면 grid를 건드리지 말고 offset_x/y, margin_x/y를 조절한다.
+    # pitch_x/y를 정수로 반올림해 다시 사용하면 누적 오차가 생기므로 아래 격자 식은 유지한다.
     img = _load_bgr(image)
 
     # 0a) ★[기능4] wafer 원판 밖을 검정으로 정리 (외부 노이즈 제거) — 가장 먼저
@@ -2093,6 +2116,8 @@ def build_die_map(image: Union[str, Path, np.ndarray],
 
     die_w = int(round(pitch_x))
     die_h = int(round(pitch_y))
+    # edge clip은 pitch 크기에 비례해야 서로 다른 해상도에서도 비슷한 안전 폭을 유지한다.
+    # die_w/die_h는 crop용 정수 크기이며, 실제 격자 위치 계산은 아래 float pitch를 계속 사용한다.
     if edge_clip_margin_px < 0:
         edge_clip_margin_px = max(2, int(round(min(die_w, die_h) * 0.10)))
     else:
@@ -2110,9 +2135,10 @@ def build_die_map(image: Union[str, Path, np.ndarray],
 
     for iy in range(-max_iy, max_iy + 1):
         for ix in range(-max_ix, max_ix + 1):
-            # Shared float boundaries prevent cumulative pixel drift.  The
-            # midpoint remains the die center even when the die contains
-            # bright vertical or horizontal circuit patterns.
+            # 중요: ix * round(pitch_x)처럼 정수 pitch를 누적하지 않는다.
+            # 각 경계를 동일한 x0 + ix * float_pitch 식으로 독립 계산해야 멀리 있는 die도
+            # 중심에서 누적 이동하지 않는다. 경계의 중점은 die 내부 밝은 회로선과 무관한
+            # 기하학적 중심이므로 particle/회로 패턴이 있어도 중심점이 쉬프트되지 않는다.
             x_a = int(round(x0 + ix * pitch_x))
             x_b = int(round(x0 + (ix + 1) * pitch_x))
             y_a = int(round(y0 - (iy + 1) * pitch_y))
@@ -2127,6 +2153,9 @@ def build_die_map(image: Union[str, Path, np.ndarray],
             if dx * dx + dy * dy > r_lim_sq:     # 웨이퍼 원 밖 격자 위치 -> die 없음
                 continue
 
+            # 중심만 원 안에 있어도 사각형 일부가 wafer 밖으로 나갈 수 있다.
+            # 제품 검사 map에서는 그런 partial die를 제거한다. 단, edge particle 함수는
+            # partial die 내부도 제외해야 하므로 별도 private map에서 이 옵션을 False로 쓴다.
             if clip_partial_edge and _rect_crosses_circle(
                     x_a, y_a, x_b, y_b, wafer_cx, wafer_cy, int(round(r_lim))):
                 continue
@@ -2244,6 +2273,9 @@ def locate_die(die_map: WaferDieMap,
     - die_index 는 격자 공식으로 해석적으로 계산하므로, die_map 에 미포함된
       위치(웨이퍼 밖 등)도 인덱스/실측값을 반환합니다. 포함 여부는 in_wafer 로 판단.
     - crop_rect_px 로 실제 이미지에서 crop 하려면 crop_die() 또는 슬라이싱 사용.
+    - `die_rect_px`는 순수 die 경계이고, `crop_rect_px`만 offset/margin이 반영된
+      영역이다. die index가 어긋났다면 offset이 아니라 build_die_map의 grid 결과를
+      먼저 확인해야 한다.
     """
     if (point is None) == (bbox is None):
         raise ValueError("point 또는 bbox 중 정확히 하나를 지정하세요.")
@@ -2262,7 +2294,9 @@ def locate_die(die_map: WaferDieMap,
     x0 = die_map.x0
     y0 = die_map.y0
 
-    # --- 좌표 -> die index (build_die_map 의 중심 공식의 역변환, 규칙 동일) ---
+    # --- 좌표 -> die index (build_die_map 의 경계 식의 역변환, 규칙 동일) ---
+    # floor를 사용해야 경계선 좌표가 항상 한쪽 die로 일관되게 귀속된다.
+    # pitch는 float 상태를 그대로 사용한다. 여기서 int로 바꾸면 build와 locate 결과가 멀어질수록 달라진다.
     ix = int(math.floor((qx - x0) / px))
     iy = int(math.floor((y0 - qy) / py))         # iy +는 위쪽(y 감소)
 
@@ -2477,11 +2511,15 @@ def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
                            min_local_contrast: float = 45.0,
                            include_debug_components: bool = False
                            ) -> Dict[str, Any]:
-    """Detect compact bright particles only in an adjustable wafer-edge ring.
+    """조절 가능한 wafer 외곽 ring에서만 작고 밝은 particle을 찾는다.
 
-    The annulus is measured inward from the detected wafer circle.  Every die
-    cell, including partial edge cells, is masked before thresholding so bright
-    circuit patterns inside a die cannot become particle candidates.
+    수정 우선순위는 `edge_inner/outer_margin_px` -> `white_threshold` -> 면적 범위
+    -> 형상/대비 필터 순서가 좋다. threshold만 낮춰서 검출 수를 맞추면 die/street
+    노이즈가 함께 증가할 수 있으므로, 반드시 diagnostic overlay의 D/R/P 표기로
+    원인을 먼저 확인한다.
+
+    partial edge die까지 포함한 모든 die cell을 threshold 이전에 mask한다. 따라서
+    die 내부의 밝은 회로 패턴과 wafer edge에 걸친 die는 particle 후보가 될 수 없다.
     """
     if edge_inner_margin_px <= edge_outer_margin_px:
         raise ValueError("edge_inner_margin_px must be larger than edge_outer_margin_px")
@@ -2495,8 +2533,10 @@ def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
     bgr = _load_bgr(image)
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     if die_map is None or not any(bool(die["is_edge_partial"]) for die in die_map.dies):
-        # Keep partial cells in this private map because they must be excluded
-        # from particle inspection even though normal die output clips them.
+        # 일반 map은 partial die를 제거하는 것이 기본이다. 하지만 particle 검사에서는
+        # 제거된 die 영역도 "검사 금지"로 남아 있어야 한다. 그래서 partial cell을 포함한
+        # private map을 별도 생성한다. 이 부분을 clip_partial_edge=True로 바꾸면 외곽 die의
+        # 밝은 회로선이 particle 후보로 새어 들어올 수 있다.
         die_map = build_die_map(
             image,
             grid_method=grid_method,
@@ -2509,6 +2549,9 @@ def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
     height, width = gray.shape
     yy, xx = np.ogrid[:height, :width]
     radius = np.hypot(xx - die_map.wafer_cx, yy - die_map.wafer_cy)
+    # margin은 wafer 원의 바깥쪽에서 안쪽으로 잰 거리다.
+    # inner margin을 키우면 더 안쪽까지 검사하고, outer margin을 줄이면 rim에 더 가깝게 검사한다.
+    # guard는 경계에 반쯤 걸친 blob을 불안정하게 분류하지 않도록 양 끝을 추가로 비운다.
     inner_radius = float(die_map.wafer_r - edge_inner_margin_px + ring_guard_px)
     outer_radius = float(die_map.wafer_r - edge_outer_margin_px - ring_guard_px)
     if inner_radius <= 0 or outer_radius <= inner_radius:
@@ -2527,6 +2570,8 @@ def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
             -1,
         )
 
+    # 최종 검사 가능 픽셀 = 외곽 ring AND 어떤 die에도 속하지 않는 픽셀.
+    # die mask를 threshold보다 먼저 적용하는 순서가 die 내부 흰 패턴 오검출 방지의 핵심이다.
     inspection_mask = ((ring_mask > 0) & (die_mask == 0)).astype(np.uint8)
     bright_mask = ((gray >= int(white_threshold)) & (inspection_mask > 0)).astype(np.uint8)
     die_bright_mask = ((gray >= int(white_threshold)) & (ring_mask > 0) & (die_mask > 0)).astype(np.uint8)
@@ -2550,12 +2595,16 @@ def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
 
     for label in range(1, num_labels):
         x, y, box_w, box_h, area = (int(value) for value in stats[label])
+        # 1차: 매우 작은 점 노이즈/큰 얼룩을 면적으로 제거한다.
+        # particle 크기가 바뀌면 min/max_area_px를 먼저 조절한다.
         if not min_area_px <= area <= max_area_px:
             if include_debug_components:
                 rejected_components.append(_record(label, "area"))
             continue
         aspect_ratio = max(box_w, box_h) / max(1.0, min(box_w, box_h))
         fill_ratio = area / float(max(1, box_w * box_h))
+        # 2차: 긴 street 조각(aspect 큼)과 빈 테두리/선(fill 작음)을 제거한다.
+        # 실제 particle이 길쭉하다면 max_aspect_ratio를 조금 올리되 R 표시를 확인한다.
         if aspect_ratio > max_aspect_ratio or fill_ratio < min_fill_ratio:
             if include_debug_components:
                 rejected_components.append(_record(label, "shape"))
@@ -2573,6 +2622,8 @@ def inspect_edge_particles(image: Union[str, Path, np.ndarray], *,
                 rejected_components.append(_record(label, "background"))
             continue
         local_contrast = mean_intensity - float(np.median(gray[ry1:ry2, rx1:rx2][local_background]))
+        # 3차: 평균 밝기가 높아도 주변보다 충분히 밝지 않으면 background texture로 간주한다.
+        # threshold는 통과하지만 R(contrast)로 빠지는 후보가 많을 때만 이 값을 낮춘다.
         if local_contrast < min_local_contrast:
             if include_debug_components:
                 rejected_components.append(_record(label, "contrast", local_contrast=local_contrast))
