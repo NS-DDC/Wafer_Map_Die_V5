@@ -8,7 +8,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from paste_ready_evaluate_bw_noisy_wafer import (
+from use_gray_wafer_die_particle import (
     build_die_map,
     inspect_edge_particles,
     render_edge_particle_diagnostic_overlay,

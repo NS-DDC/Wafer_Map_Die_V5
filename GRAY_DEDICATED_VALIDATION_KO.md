@@ -2,7 +2,7 @@
 
 ## 목적
 
-`paste_ready_evaluate_bw_noisy_wafer.py`는 다른 파일을 import하지 않고 복사해서 사용할 수 있는 Gray 전용 판정 파일이다.
+`use_gray_wafer_die_particle.py`는 다른 파일을 import하지 않고 복사해서 사용할 수 있는 Gray 전용 판정 파일이다.
 
 이번 수정은 실제 Gray wafer에서 다음 세 가지를 보장한다.
 
@@ -16,7 +16,7 @@
 
 ```python
 import cv2
-from paste_ready_evaluate_bw_noisy_wafer import build_die_map
+from use_gray_wafer_die_particle import build_die_map
 
 image = cv2.imread("Gray_Wafer/456.png", cv2.IMREAD_GRAYSCALE)
 die_map = build_die_map(

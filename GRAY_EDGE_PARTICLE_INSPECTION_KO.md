@@ -12,7 +12,7 @@
 
 ```python
 import cv2
-from paste_ready_evaluate_bw_noisy_wafer import inspect_edge_particles
+from use_gray_wafer_die_particle import inspect_edge_particles
 
 image = cv2.imread("Gray_Wafer/2222.png", cv2.IMREAD_GRAYSCALE)
 result = inspect_edge_particles(
