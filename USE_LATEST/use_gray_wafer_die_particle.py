@@ -552,6 +552,19 @@ def _safe_autocorr_period(profile: np.ndarray, min_pitch: int,
         return min(max(float(fallback), lower), upper)
 
 
+def _discard_subpitch_bands(bands: List[Tuple[float, int, int, float]],
+                            min_pitch: int) -> List[Tuple[float, int, int, float]]:
+    """Reject both edges of a broad noise stripe that are much closer than one pitch."""
+    ordered = sorted(bands, key=lambda band: band[0])
+    reject: set[int] = set()
+    close_limit = max(4.0, float(min_pitch) * 0.50)
+    for index in range(len(ordered) - 1):
+        if ordered[index + 1][0] - ordered[index][0] < close_limit:
+            reject.add(index)
+            reject.add(index + 1)
+    return [band for index, band in enumerate(ordered) if index not in reject]
+
+
 def _select_cross_origin(x_bands: List[Tuple[float, int, int, float]],
                          y_bands: List[Tuple[float, int, int, float]],
                          wafer_cx: float, wafer_cy: float,
@@ -581,18 +594,22 @@ def detect_thin_cross_grid(image: np.ndarray,
                            roi_half: Optional[int] = None,
                            min_pitch: int = 30,
                            max_pitch: Optional[int] = 70,
-                           thin_width_max: int = 4) -> Tuple[float, float, int, int]:
+                           thin_width_max: int = 5) -> Tuple[float, float, int, int]:
     """Detect a weak Gray grid from narrow vertical/horizontal cross ridges.
 
     A local high-pass image is opened separately in vertical and horizontal
-    directions. Physical 1-2 px lines become up to 4 px after local contrast
+    directions. Physical 1-2 px lines become up to 5 px after local contrast
     enhancement, so only bands up to ``thin_width_max`` are retained.
     A wide vertical noise band can survive the vertical opening, but it cannot
     become the origin because it is rejected by width and paired with a narrow
     horizontal ridge near the wafer center. ``pitch_x`` is measured from left/right vertical
     cross positions and ``pitch_y`` from upper/lower horizontal cross positions.
     """
-    if max_pitch is not None and max_pitch < min_pitch:
+    # The weak-Gray cross mode is specialized for the requested 30-70px range.
+    # Other grid methods keep their historical unbounded default when requested.
+    if max_pitch is None:
+        max_pitch = 70
+    if max_pitch < min_pitch:
         raise ValueError("max_pitch must be greater than or equal to min_pitch")
     bgr = _as_bgr(image)
     height, width = bgr.shape[:2]
@@ -612,7 +629,9 @@ def detect_thin_cross_grid(image: np.ndarray,
     ridge_threshold = max(2, int(round(otsu_level)), int(round(np.percentile(ridge, 82))))
     thin_mask = (ridge >= ridge_threshold).astype(np.uint8) * 255
 
-    line_length = max(9, int(round(min_pitch * 0.45)))
+    # Weak 3000px wafer streets can be interrupted by die texture; require only
+    # a short directional run instead of half of the smallest expected pitch.
+    line_length = max(7, int(round(min_pitch * 0.30)))
     vertical = cv2.morphologyEx(
         thin_mask, cv2.MORPH_OPEN,
         cv2.getStructuringElement(cv2.MORPH_RECT, (1, line_length)))
@@ -628,6 +647,7 @@ def detect_thin_cross_grid(image: np.ndarray,
     x_bands = [band for band in x_bands if band[2] - band[1] <= thin_width_max]
     # The 3px projection smoothing makes a physical 1-2px horizontal ridge appear up to 6px.
     y_bands = [band for band in y_bands if band[2] - band[1] <= thin_width_max + 2]
+    x_bands = _discard_subpitch_bands(x_bands, min_pitch)
     if len(x_bands) < 2 or len(y_bands) < 2:
         raise RuntimeError(
             "Thin cross grid was not found. Check focus/contrast or increase thin_width_max only when real streets are wider.")
@@ -728,7 +748,7 @@ def detect_grid(image_bgr: np.ndarray,
                 method: str = "cross",
                 roi_ratio: float = 0.6,
                 min_pitch: int = 30,
-                max_pitch: Optional[int] = 70,
+                max_pitch: Optional[int] = None,
                 corner_x0_mode: str = "auto",
                 die_template_bgr: Optional[np.ndarray] = None,
                 line_hue: Optional[int] = None,
@@ -2250,7 +2270,7 @@ def build_die_map(image: Union[str, Path, np.ndarray],
                   *,
                   grid_method: str = DEFAULT_GRID_METHOD,
                   min_pitch: int = 30,
-                  max_pitch: Optional[int] = 70,
+                  max_pitch: Optional[int] = None,
                   corner_x0_mode: str = "auto",
                   pixel_per_unit: int = DEFAULT_PIXEL_PER_UNIT,
                   include_edge: bool = True,
@@ -2282,8 +2302,8 @@ def build_die_map(image: Union[str, Path, np.ndarray],
     ----------
     image            : wafer 이미지 경로(str/Path) 또는 BGR ndarray
     grid_method      : 격자 검출 방식 "cross"(기본, 1-2px 십자) | "corner" | "hybrid" | "std" | "color"
-    min_pitch/max_pitch: 허용할 die pitch 범위(px). max_pitch는 hard upper bound이다.
-                          예: `max_pitch=70`이면 반환 pitch_x/y도 70을 넘지 않는다.
+    min_pitch/max_pitch: 허용할 die pitch 범위(px). 기본 `cross` 방식은 max_pitch가
+                          None이어도 70px hard upper bound를 적용한다. 다른 방식은 None이면 상한 없음.
     corner_x0_mode   : corner 방식의 x0 보정. "auto"(기본)는 강하고 넓은 세로 흰 노이즈를
                        감지하면 wafer 중심 쪽으로 pitch_x/2 이동한다. "nearest"는 보정 끔,
                        "half_pitch"는 항상 이동한다.

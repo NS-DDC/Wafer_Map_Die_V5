@@ -64,7 +64,7 @@ print(die_map.edge_index_report["margin"])
 | 파라미터 | 기본값 | 용도 |
 | --- | --- | --- |
 | `grid_method` | `"cross"` | 약한 1채널 Gray 기본. 1~2px 세로/가로 ridge를 분리해 중심 부근 십자점을 찾는다. 기존 `corner`, `std`, `color`, `hybrid`도 선택 가능하다. |
-| `min_pitch`, `max_pitch` | `30`, `70` | 허용할 pitch 범위(px). 30~70px 범위를 hard bound로 적용한다. |
+| `min_pitch`, `max_pitch` | `30`, `None` | 기본 `cross` 방식은 `None`이어도 30~70px hard bound를 적용한다. `std` 등 다른 방식은 필요한 상한을 직접 지정한다. |
 | `corner_x0_mode` | `"auto"` | `corner` 방식에서 강하고 넓은 세로 흰 노이즈를 감지하면 wafer 중심 방향으로 `pitch_x/2` 이동한다. `nearest`는 보정 끔, `half_pitch`는 강제 보정이다. |
 | `notch_align` | `False` | 약한 Gray 기본은 회전 보정을 끈다. 실제 기울기가 확인된 경우에만 `True`로 켠다. |
 | `angle_align_method` | `"die_render"` | `die_render`, `notch`, `vertical_line`, `none` 중 선택한다. |
