@@ -612,7 +612,8 @@ def _keep_periodic_candidates(bands: List[Tuple[float, int, int, float]],
 def _select_cross_origin(x_bands: List[Tuple[float, int, int, float]],
                          y_bands: List[Tuple[float, int, int, float]],
                          wafer_cx: float, wafer_cy: float,
-                         pitch_x: float, pitch_y: float) -> Tuple[float, float]:
+                         pitch_x: float, pitch_y: float,
+                         origin_mode: str = "gv_boundary") -> Tuple[float, float]:
     """Select central thin vertical/horizontal ridges and form their cross origin."""
     if not x_bands or not y_bands:
         raise RuntimeError("No thin vertical/horizontal cross candidates were found near wafer center.")
@@ -621,6 +622,14 @@ def _select_cross_origin(x_bands: List[Tuple[float, int, int, float]],
     # but distant defect/noise intersection from winning only by projection strength.
     near_x = [band for band in x_bands if abs(band[0] - wafer_cx) <= max(2.0, pitch_x * 1.15)]
     near_y = [band for band in y_bands if abs(band[0] - wafer_cy) <= max(2.0, pitch_y * 1.15)]
+    mode = str(origin_mode).lower().strip()
+    if mode in ("center", "center_score", "center_scored", "score"):
+        mode = "center_scored"
+    elif mode in ("gv", "boundary", "gv_boundary", "nearest"):
+        mode = "gv_boundary"
+    else:
+        raise ValueError("cross_origin_mode must be 'gv_boundary' or 'center_scored'.")
+
     periodic_x = _keep_periodic_candidates(x_bands, pitch_x)
     periodic_y = _keep_periodic_candidates(y_bands, pitch_y)
     candidate_x = [band for band in periodic_x if band in near_x] or periodic_x
@@ -629,9 +638,30 @@ def _select_cross_origin(x_bands: List[Tuple[float, int, int, float]],
     # noise, not the weak GV boundary.  Select the nearest repeated noise lane
     # only as a reference, then move half a pitch toward the wafer center to the
     # boundary between lanes.  This avoids placing x0 on the bright gray stripe.
+    def gv_boundary_from_noise(noise_band: Tuple[float, int, int, float]) -> float:
+        direction_to_center = -1.0 if noise_band[0] >= wafer_cx else 1.0
+        return float(noise_band[0] + direction_to_center * pitch_x * 0.5)
+
+    if mode == "center_scored":
+        # Score actual cross candidates, rather than trusting a single strongest
+        # feature.  The distance is normalized by pitch so both axes contribute
+        # comparably even when pitch_x and pitch_y differ.
+        score_x = [band for band in periodic_x if abs(band[0] - wafer_cx) <= pitch_x * 2.2]
+        score_y = [band for band in periodic_y if abs(band[0] - wafer_cy) <= pitch_y * 2.2]
+        score_x = score_x or candidate_x
+        score_y = score_y or candidate_y
+        candidates = [(gv_boundary_from_noise(x_band), float(y_band[0]))
+                      for x_band in score_x for y_band in score_y]
+        selected_x, selected_y = max(
+            candidates,
+            key=lambda point: -math.hypot(
+                (point[0] - wafer_cx) / max(pitch_x, 1e-6),
+                (point[1] - wafer_cy) / max(pitch_y, 1e-6)),
+        )
+        return float(selected_x), float(selected_y)
+
     selected_noise_x = min(candidate_x, key=lambda band: abs(band[0] - wafer_cx))
-    direction_to_center = -1.0 if selected_noise_x[0] >= wafer_cx else 1.0
-    selected_x = float(selected_noise_x[0] + direction_to_center * pitch_x * 0.5)
+    selected_x = gv_boundary_from_noise(selected_noise_x)
 
     # The horizontal directional mask identifies actual cross rows.  Unlike the
     # vertical die-center noise, y0 is the nearest horizontal row at/before the
@@ -647,7 +677,8 @@ def detect_thin_cross_grid(image: np.ndarray,
                            roi_half: Optional[int] = None,
                            min_pitch: int = 30,
                            max_pitch: Optional[int] = 70,
-                           thin_width_max: int = 5) -> Tuple[float, float, int, int]:
+                           thin_width_max: int = 5,
+                           cross_origin_mode: str = "gv_boundary") -> Tuple[float, float, int, int]:
     """Detect a weak Gray grid from narrow vertical/horizontal cross ridges.
 
     A local high-pass image is opened separately in vertical and horizontal
@@ -719,7 +750,8 @@ def detect_thin_cross_grid(image: np.ndarray,
     pitch_x = _median_band_spacing(x_bands, rough_x, min_pitch, max_pitch)
     pitch_y = _median_band_spacing(y_bands, rough_y, min_pitch, max_pitch)
     cross_x, cross_y = _select_cross_origin(
-        x_bands, y_bands, wafer_cx, wafer_cy, pitch_x, pitch_y)
+        x_bands, y_bands, wafer_cx, wafer_cy, pitch_x, pitch_y,
+        origin_mode=cross_origin_mode)
     return float(pitch_x), float(pitch_y), int(round(cross_x)), int(round(cross_y))
 
 
@@ -810,6 +842,7 @@ def detect_grid(image_bgr: np.ndarray,
                 min_pitch: int = 30,
                 max_pitch: Optional[int] = None,
                 corner_x0_mode: str = "auto",
+                cross_origin_mode: str = "gv_boundary",
                 die_template_bgr: Optional[np.ndarray] = None,
                 line_hue: Optional[int] = None,
                 hue_delta: int = 20,
@@ -824,7 +857,8 @@ def detect_grid(image_bgr: np.ndarray,
     if method in ("cross", "thin_cross", "weak_gray"):
         return detect_thin_cross_grid(
             image_bgr, wafer_cx, wafer_cy, wafer_r,
-            min_pitch=min_pitch, max_pitch=max_pitch)
+            min_pitch=min_pitch, max_pitch=max_pitch,
+            cross_origin_mode=cross_origin_mode)
     # "corner" : 밝은 wafer street 선 자체를 mask 로 잡아 코너 교차점을 직접 검출.
     if method in ("corner", "corner_grid", "street"):
         return detect_corner_grid(
@@ -2350,6 +2384,7 @@ def build_die_map(image: Union[str, Path, np.ndarray],
                   min_pitch: int = 30,
                   max_pitch: Optional[int] = None,
                   corner_x0_mode: str = "auto",
+                  cross_origin_mode: str = "gv_boundary",
                   pixel_per_unit: int = DEFAULT_PIXEL_PER_UNIT,
                   include_edge: bool = True,
                   edge_margin: float = DEFAULT_EDGE_MARGIN,
@@ -2385,6 +2420,9 @@ def build_die_map(image: Union[str, Path, np.ndarray],
     corner_x0_mode   : corner 방식의 x0 보정. "auto"(기본)는 강하고 넓은 세로 흰 노이즈를
                        감지하면 wafer 중심 쪽으로 pitch_x/2 이동한다. "nearest"는 보정 끔,
                        "half_pitch"는 항상 이동한다.
+    cross_origin_mode: cross 방식의 중심 corner 선택. "gv_boundary"(기본)는 중심에 가장 가까운
+                       반복 세로 노이즈 lane에서 GV 경계로 이동한다. "center_scored"는 GV 경계와
+                       가로 cross 후보의 모든 조합에 중심 근접 점수를 매겨 가장 높은 점을 선택한다.
     pixel_per_unit   : 실측 좌표 환산 (px/unit)
     include_edge     : True 면 웨이퍼 원 안 die 전부 포함(가장자리 잘린 die 포함).
     edge_margin      : die 포함 기준 = (중심거리 <= r * edge_margin).
@@ -2482,6 +2520,7 @@ def build_die_map(image: Union[str, Path, np.ndarray],
         min_pitch=min_pitch,
         max_pitch=max_pitch,
         corner_x0_mode=corner_x0_mode,
+        cross_origin_mode=cross_origin_mode,
         die_template_bgr=die_template_bgr)
 
     die_w = int(round(pitch_x))

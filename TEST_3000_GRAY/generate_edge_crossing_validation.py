@@ -108,6 +108,7 @@ def main() -> None:
         clip_partial_edge=False,
         edge_clip_margin_px=0,
         edge_mode="circle",
+        cross_origin_mode="center_scored",
     )
 
     full = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
