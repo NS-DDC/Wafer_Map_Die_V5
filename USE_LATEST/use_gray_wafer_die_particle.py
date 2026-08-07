@@ -565,6 +565,50 @@ def _discard_subpitch_bands(bands: List[Tuple[float, int, int, float]],
     return [band for index, band in enumerate(ordered) if index not in reject]
 
 
+def _periodic_band_support(bands: List[Tuple[float, int, int, float]],
+                           position: float, pitch: float) -> float:
+    """Measure whether a candidate belongs to a repeating grid phase.
+
+    An isolated narrow vertical noise line can pass the width filter.  Unlike a
+    real street, it does not have similarly thin bands at ``position +/- n*pitch``.
+    The returned 0..1 support is therefore used as a second guard after width.
+    """
+    if len(bands) < 2 or pitch <= 0:
+        return 0.0
+    coords = [float(band[0]) for band in bands]
+    lower, upper = min(coords), max(coords)
+    tolerance = max(2.0, float(pitch) * 0.14)
+    matched = 0
+    expected = 0
+    step = 1
+    while position - step * pitch >= lower - tolerance:
+        expected += 1
+        if min(abs(coord - (position - step * pitch)) for coord in coords) <= tolerance:
+            matched += 1
+        step += 1
+    step = 1
+    while position + step * pitch <= upper + tolerance:
+        expected += 1
+        if min(abs(coord - (position + step * pitch)) for coord in coords) <= tolerance:
+            matched += 1
+        step += 1
+    return float(matched / expected) if expected else 0.0
+
+
+def _keep_periodic_candidates(bands: List[Tuple[float, int, int, float]],
+                              pitch: float) -> List[Tuple[float, int, int, float]]:
+    """Keep grid-phase candidates and reject isolated thin noise when possible."""
+    if len(bands) < 3:
+        return bands
+    scored = [(band, _periodic_band_support(bands, band[0], pitch)) for band in bands]
+    best = max(score for _, score in scored)
+    # Do not make a weak image fail solely because periodic support is poor;
+    # only remove candidates when another phase is clearly better.
+    if best < 0.35:
+        return bands
+    return [band for band, score in scored if score >= max(0.35, best * 0.70)]
+
+
 def _select_cross_origin(x_bands: List[Tuple[float, int, int, float]],
                          y_bands: List[Tuple[float, int, int, float]],
                          wafer_cx: float, wafer_cy: float,
@@ -577,8 +621,10 @@ def _select_cross_origin(x_bands: List[Tuple[float, int, int, float]],
     # but distant defect/noise intersection from winning only by projection strength.
     near_x = [band for band in x_bands if abs(band[0] - wafer_cx) <= max(2.0, pitch_x * 1.15)]
     near_y = [band for band in y_bands if abs(band[0] - wafer_cy) <= max(2.0, pitch_y * 1.15)]
-    candidate_x = near_x if near_x else x_bands
-    candidate_y = near_y if near_y else y_bands
+    periodic_x = _keep_periodic_candidates(x_bands, pitch_x)
+    periodic_y = _keep_periodic_candidates(y_bands, pitch_y)
+    candidate_x = [band for band in periodic_x if band in near_x] or periodic_x
+    candidate_y = [band for band in periodic_y if band in near_y] or periodic_y
     # Directional opening can shift a physical 1px crossing by one pixel in each
     # direction. Pick axes independently after width filtering; their geometric
     # intersection is the grid corner and is more stable than exact mask overlap.
@@ -639,14 +685,21 @@ def detect_thin_cross_grid(image: np.ndarray,
         thin_mask, cv2.MORPH_OPEN,
         cv2.getStructuringElement(cv2.MORPH_RECT, (line_length, 1)))
     x_profile = _smooth_projection(vertical.mean(axis=0), 3)
-    # A wide vertical-noise stripe can break a horizontal opening at its crossing.
-    # The row ridge projection keeps the horizontal cross positions continuous.
-    y_profile = _smooth_projection(ridge.mean(axis=1), 3)
+    # Use directional horizontal runs for y positions as well.  The raw ridge
+    # projection also contains fine die texture (often 8-10px apart), which can
+    # falsely become a horizontal cross even though it is not a grid street.
+    y_profile = _smooth_projection(horizontal.mean(axis=1), 3)
     x_bands = _find_projection_bands(x_profile, x0, 1, 0.10, 0.35, 0.1)
     y_bands = _find_projection_bands(y_profile, y0, 1, 0.10, 0.35, 0.1)
     x_bands = [band for band in x_bands if band[2] - band[1] <= thin_width_max]
     # The 3px projection smoothing makes a physical 1-2px horizontal ridge appear up to 6px.
     y_bands = [band for band in y_bands if band[2] - band[1] <= thin_width_max + 2]
+    if len(y_bands) < 2:
+        # Keep a weak-signal fallback, but only when no directional horizontal
+        # streets survived.  Normal cross detection must not use texture rows.
+        y_profile = _smooth_projection(ridge.mean(axis=1), 3)
+        y_bands = _find_projection_bands(y_profile, y0, 1, 0.10, 0.35, 0.1)
+        y_bands = [band for band in y_bands if band[2] - band[1] <= thin_width_max + 2]
     x_bands = _discard_subpitch_bands(x_bands, min_pitch)
     if len(x_bands) < 2 or len(y_bands) < 2:
         raise RuntimeError(

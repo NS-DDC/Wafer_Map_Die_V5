@@ -18,6 +18,7 @@ SOURCE_JPEG = Path("E:/mirero/Claude_V5") / "\uc6d0\ubcf8" / "Claude_V5" / "TEST
 OUT_DIR = Path(__file__).resolve().parent
 
 sys.path.insert(0, str(REPO_ROOT))
+import USE_LATEST.use_gray_wafer_die_particle as grid_module  # noqa: E402
 from USE_LATEST.use_gray_wafer_die_particle import build_die_map  # noqa: E402
 
 
@@ -42,6 +43,52 @@ def _draw_circle_and_corner(canvas: np.ndarray, dm: object) -> None:
 def _write_preview(path: Path, image: np.ndarray) -> None:
     preview = cv2.resize(image, (1000, 1000), interpolation=cv2.INTER_AREA)
     cv2.imwrite(str(path), preview)
+
+
+def _write_cross_evidence(gray: np.ndarray, dm: object) -> None:
+    """Visualize only the thin candidates used to select the central cross."""
+    roi_half = min(700, max(180, int(dm.wafer_r * 0.30)))
+    roi_x0, roi_x1 = int(dm.wafer_cx - roi_half), int(dm.wafer_cx + roi_half)
+    roi_y0, roi_y1 = int(dm.wafer_cy - roi_half), int(dm.wafer_cy + roi_half)
+    roi = gray[roi_y0:roi_y1, roi_x0:roi_x1]
+    enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(32, 32)).apply(roi)
+    ridge = cv2.absdiff(enhanced, cv2.GaussianBlur(enhanced, (0, 0), sigmaX=1.25))
+    otsu, _ = cv2.threshold(ridge, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    threshold = max(2, int(round(otsu)), int(round(np.percentile(ridge, 82))))
+    thin_mask = (ridge >= threshold).astype(np.uint8) * 255
+    line_length = 9
+    vertical = cv2.morphologyEx(
+        thin_mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, line_length)))
+    horizontal = cv2.morphologyEx(
+        thin_mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (line_length, 1)))
+    x_profile = grid_module._smooth_projection(vertical.mean(axis=0), 3)
+    y_profile = grid_module._smooth_projection(horizontal.mean(axis=1), 3)
+    x_bands = grid_module._find_projection_bands(x_profile, roi_x0, 1, 0.10, 0.35, 0.1)
+    x_bands = [band for band in x_bands if band[2] - band[1] <= 5]
+    x_bands = grid_module._discard_subpitch_bands(x_bands, 30)
+    y_bands = grid_module._find_projection_bands(y_profile, roi_y0, 1, 0.10, 0.35, 0.1)
+    y_bands = [band for band in y_bands if band[2] - band[1] <= 7]
+
+    half = 180
+    left, top = int(dm.x0 - half), int(dm.y0 - half)
+    right, bottom = int(dm.x0 + half), int(dm.y0 + half)
+    canvas = cv2.cvtColor(gray[top:bottom, left:right], cv2.COLOR_GRAY2BGR)
+    for band in x_bands:
+        x = int(round(band[0]))
+        if left <= x < right:
+            cv2.line(canvas, (x - left, 0), (x - left, canvas.shape[0] - 1), (0, 200, 255), 1)
+    for band in y_bands:
+        y = int(round(band[0]))
+        if top <= y < bottom:
+            cv2.line(canvas, (0, y - top), (canvas.shape[1] - 1, y - top), (0, 200, 255), 1)
+    selected_x, selected_y = int(round(dm.x0)) - left, int(round(dm.y0)) - top
+    cv2.line(canvas, (selected_x, 0), (selected_x, canvas.shape[0] - 1), (255, 255, 0), 2)
+    cv2.line(canvas, (0, selected_y), (canvas.shape[1] - 1, selected_y), (255, 255, 0), 2)
+    cv2.drawMarker(canvas, (selected_x, selected_y), (255, 0, 255), cv2.MARKER_CROSS, 18, 2)
+    canvas = cv2.resize(canvas, (1080, 1080), interpolation=cv2.INTER_NEAREST)
+    cv2.putText(canvas, f"selected cross: ({dm.x0}, {dm.y0})", (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 255), 2, cv2.LINE_AA)
+    cv2.imwrite(str(OUT_DIR / "wafer_1_cross_evidence_zoom.png"), canvas)
 
 
 def main() -> None:
@@ -92,6 +139,7 @@ def main() -> None:
     cv2.imwrite(str(OUT_DIR / "wafer_1_edge_gap_diagnostic_3000.png"), diagnostic)
     _write_preview(OUT_DIR / "wafer_1_cross_overlay_preview.png", full)
     _write_preview(OUT_DIR / "wafer_1_edge_gap_diagnostic_preview.png", diagnostic)
+    _write_cross_evidence(gray, dm)
 
     print({
         "wafer": (dm.wafer_cx, dm.wafer_cy, dm.wafer_r),
