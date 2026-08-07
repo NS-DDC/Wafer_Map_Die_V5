@@ -208,7 +208,7 @@ def build_evaluator_board() -> None:
     draw = ImageDraw.Draw(img)
 
     add_text(draw, (70, 48), "상세 로직 2: 흑백 고노이즈 Wafer 판정기", size=46, bold=True)
-    add_text(draw, (72, 106), "대상 파일: use_gray_wafer_die_particle.py", size=24, fill=MUTED)
+    add_text(draw, (72, 106), "대상 파일: USE_LATEST/use_gray_wafer_die_particle.py", size=24, fill=MUTED)
     rounded(draw, (50, 150, 1750, 2140), fill="#0f162b", outline="#26314e", width=2, radius=34)
 
     rounded(draw, (80, 190, 840, 920), fill=PANEL, outline=BORDER, width=2)

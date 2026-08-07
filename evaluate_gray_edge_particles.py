@@ -8,7 +8,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from use_gray_wafer_die_particle import (
+from USE_LATEST.use_gray_wafer_die_particle import (
     build_die_map,
     inspect_particles_in_wafer_ring,
     render_particle_diagnostic_overlay,

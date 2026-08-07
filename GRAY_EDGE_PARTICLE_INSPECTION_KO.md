@@ -14,7 +14,7 @@
 
 ```python
 import cv2
-from use_gray_wafer_die_particle import build_die_map, inspect_particles_in_wafer_ring
+from USE_LATEST.use_gray_wafer_die_particle import build_die_map, inspect_particles_in_wafer_ring
 
 image = cv2.imread("Gray_Wafer/2222.png", cv2.IMREAD_GRAYSCALE)
 dm = build_die_map(image, grid_method="std", notch_align=False, edge_mode="both")

@@ -1,6 +1,6 @@
 # Manual Grid Wafer Map 가이드
 
-사용 파일은 [`use_manual_grid_wafer_map.py`](use_manual_grid_wafer_map.py)다. 이 파일은 `numpy`, `opencv-python`만 사용하는 독립형 파일이며, 기존 자동 grid 검출을 실행하지 않는다.
+사용 파일은 [`USE_LATEST/use_manual_grid_wafer_map.py`](USE_LATEST/use_manual_grid_wafer_map.py)다. 이 파일은 `numpy`, `opencv-python`만 사용하는 독립형 파일이며, 기존 자동 grid 검출을 실행하지 않는다.
 
 ## 역할 분리
 
@@ -41,7 +41,7 @@ center = ((left + right) / 2, (top + bottom) / 2)
 
 ```python
 import cv2
-from use_manual_grid_wafer_map import build_die_map, locate_die
+from USE_LATEST.use_manual_grid_wafer_map import build_die_map, locate_die
 
 # 원본 이미지. Gray 1채널, BGR, BGRA 모두 가능하다.
 image = cv2.imread("wafer.png", cv2.IMREAD_GRAYSCALE)

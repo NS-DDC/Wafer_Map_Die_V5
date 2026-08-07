@@ -1,10 +1,10 @@
-"""Regression check for use_manual_grid_wafer_map.py using manual float inputs."""
+"""Regression check for USE_LATEST/use_manual_grid_wafer_map.py using manual float inputs."""
 
 from pathlib import Path
 
 import cv2
 
-from use_manual_grid_wafer_map import build_die_map, locate_die
+from USE_LATEST.use_manual_grid_wafer_map import build_die_map, locate_die
 
 
 CASES = {

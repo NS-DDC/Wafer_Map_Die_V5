@@ -1,8 +1,8 @@
-# `use_gray_wafer_die_particle.py` 전체 기능 가이드
+# `USE_LATEST/use_gray_wafer_die_particle.py` 전체 기능 가이드
 
 ## 사용할 최신 파일
 
-실제 검사 프로그램에 넣을 최신 단일 파일은 [`use_gray_wafer_die_particle.py`](use_gray_wafer_die_particle.py)이다.
+실제 검사 프로그램에 넣을 최신 단일 파일은 [`USE_LATEST/use_gray_wafer_die_particle.py`](USE_LATEST/use_gray_wafer_die_particle.py)이다.
 
 - 다른 프로젝트 파일을 import하지 않는 독립형 파일이다.
 - 필요한 외부 패키지는 `numpy`, `opencv-python`뿐이다.
@@ -25,7 +25,7 @@
 
 ```python
 import cv2
-from use_gray_wafer_die_particle import build_die_map, locate_die
+from USE_LATEST.use_gray_wafer_die_particle import build_die_map, locate_die
 
 # 호출부는 경로가 아니라 읽어 둔 1채널 이미지 배열을 전달합니다.
 image = cv2.imread("Gray_Wafer/2222.png", cv2.IMREAD_GRAYSCALE)
@@ -103,7 +103,7 @@ print(die_map.edge_index_report["margin"])
 
 ```python
 import cv2
-from use_gray_wafer_die_particle import (
+from USE_LATEST.use_gray_wafer_die_particle import (
     inspect_particles_in_wafer_ring,
     render_particle_diagnostic_overlay,
 )
@@ -179,7 +179,7 @@ cv2.imwrite("edge_particle_debug.png", debug_image)
 ```powershell
 python evaluate_gray_edge_particles.py
 python make_gray_edge_particle_visual.py
-python -m py_compile use_gray_wafer_die_particle.py evaluate_gray_edge_particles.py
+python -m py_compile USE_LATEST/use_gray_wafer_die_particle.py evaluate_gray_edge_particles.py
 ```
 
 `Gray_Wafer/111.png`, `Gray_Wafer/2222.png`는 1채널 입력으로 정상 처리되었고 각각 190개 die, pitch `76 x 67 px`를 검출했다. 실제 이미지에서 검출된 particle은 0개이며, 이는 보이는 밝은 점이 partial die 내부에 있어 의도적으로 제외되었기 때문이다. `Paticle/22.png`를 허용 영역에 삽입한 synthetic 검증에서는 정확히 1개를 검출해 PASS했다.

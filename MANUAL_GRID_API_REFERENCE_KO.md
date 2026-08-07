@@ -1,6 +1,6 @@
 # Manual Grid API 반환값 레퍼런스
 
-대상 파일: [`use_manual_grid_wafer_map.py`](use_manual_grid_wafer_map.py)
+대상 파일: [`USE_LATEST/use_manual_grid_wafer_map.py`](USE_LATEST/use_manual_grid_wafer_map.py)
 
 이 문서는 자동 grid 검출을 쓰지 않고, 호출부가 float `corner_point`와 float `pitch`를 전달하는 경우의 API만 정리한다.
 
@@ -8,7 +8,7 @@
 
 ```python
 import cv2
-from use_manual_grid_wafer_map import detect_wafer_center, build_die_map, locate_die
+from USE_LATEST.use_manual_grid_wafer_map import detect_wafer_center, build_die_map, locate_die
 
 image = cv2.imread("wafer.png", cv2.IMREAD_GRAYSCALE)
 if image is None:

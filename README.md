@@ -12,7 +12,8 @@
 | 파일 | 설명 |
 |------|------|
 | `wafer_die_map_v5.py` | 메인 코드(단일 파일) |
-| `use_manual_grid_wafer_map.py` | 수동 float grid corner/pitch 입력 전용 단일 파일. wafer 중심만 이미지에서 검출한다. |
+| `USE_LATEST/use_manual_grid_wafer_map.py` | 수동 float grid corner/pitch 입력 전용 단일 파일. wafer 중심만 이미지에서 검출한다. |
+| `USE_LATEST/use_gray_wafer_die_particle.py` | Gray wafer 및 wafer ring particle 검사 전용 단일 파일. |
 | `MANUAL_GRID_WAFER_MAP_KO.md` | 수동 grid 입력 좌표 규칙 및 호출 가이드 |
 | `MANUAL_GRID_API_REFERENCE_KO.md` | 수동 grid 전용 함수, `dm`, Die entry, `locate_die` 전체 반환값 레퍼런스 |
 | `evaluate_manual_grid_wafer_map.py` | 수동 float grid 입력 회귀 검사 스크립트 |
