@@ -625,14 +625,21 @@ def _select_cross_origin(x_bands: List[Tuple[float, int, int, float]],
     periodic_y = _keep_periodic_candidates(y_bands, pitch_y)
     candidate_x = [band for band in periodic_x if band in near_x] or periodic_x
     candidate_y = [band for band in periodic_y if band in near_y] or periodic_y
-    # Directional opening can shift a physical 1px crossing by one pixel in each
-    # direction. Pick axes independently after width filtering; their geometric
-    # intersection is the grid corner and is more stable than exact mask overlap.
-    selected_x = min(candidate_x, key=lambda band: abs(band[0] - wafer_cx))
+    # In this Gray wafer type the strong repeating vertical bands are die-center
+    # noise, not the weak GV boundary.  Select the nearest repeated noise lane
+    # only as a reference, then move half a pitch toward the wafer center to the
+    # boundary between lanes.  This avoids placing x0 on the bright gray stripe.
+    selected_noise_x = min(candidate_x, key=lambda band: abs(band[0] - wafer_cx))
+    direction_to_center = -1.0 if selected_noise_x[0] >= wafer_cx else 1.0
+    selected_x = float(selected_noise_x[0] + direction_to_center * pitch_x * 0.5)
+
+    # The horizontal directional mask identifies actual cross rows.  Unlike the
+    # vertical die-center noise, y0 is the nearest horizontal row at/before the
+    # wafer center and needs no half-pitch conversion.
     upper_y = [band for band in candidate_y if band[0] <= wafer_cy]
     selected_y = max(upper_y, key=lambda band: band[0]) if upper_y else min(
         candidate_y, key=lambda band: abs(band[0] - wafer_cy))
-    return float(selected_x[0]), float(selected_y[0])
+    return selected_x, float(selected_y[0])
 
 
 def detect_thin_cross_grid(image: np.ndarray,
@@ -645,11 +652,11 @@ def detect_thin_cross_grid(image: np.ndarray,
 
     A local high-pass image is opened separately in vertical and horizontal
     directions. Physical 1-2 px lines become up to 5 px after local contrast
-    enhancement, so only bands up to ``thin_width_max`` are retained.
-    A wide vertical noise band can survive the vertical opening, but it cannot
-    become the origin because it is rejected by width and paired with a narrow
-    horizontal ridge near the wafer center. ``pitch_x`` is measured from left/right vertical
-    cross positions and ``pitch_y`` from upper/lower horizontal cross positions.
+    enhancement, so only bands up to ``thin_width_max`` are retained.  In the
+    supplied Gray wafer type the repeated vertical bright bands are die-center
+    noise: their period measures ``pitch_x``, while the weak GV boundary ``x0``
+    is inferred half a pitch toward the wafer center.  ``pitch_y`` and ``y0``
+    come from actual narrow horizontal cross rows.
     """
     # The weak-Gray cross mode is specialized for the requested 30-70px range.
     # Other grid methods keep their historical unbounded default when requested.

@@ -17,14 +17,16 @@ def main() -> None:
     wafer_cx = wafer_cy = 1500
     wafer_r = 1330
     expected_pitch_x, expected_pitch_y = 47, 53
-    expected_x0, expected_y0 = 1498, 1490
+    noise_lane_x, expected_x0, expected_y0 = 1498, 1521, 1490
 
     yy, xx = np.ogrid[:height, :width]
     wafer_mask = (xx - wafer_cx) ** 2 + (yy - wafer_cy) ** 2 <= wafer_r ** 2
     image = np.zeros((height, width), np.uint8)
     image[wafer_mask] = 45
-    for x in np.arange(expected_x0 - 40 * expected_pitch_x,
-                       expected_x0 + 41 * expected_pitch_x, expected_pitch_x):
+    # Repeated bright vertical lanes are die-center noise.  The expected weak
+    # GV boundary is halfway to the next lane toward the wafer center.
+    for x in np.arange(noise_lane_x - 40 * expected_pitch_x,
+                       noise_lane_x + 41 * expected_pitch_x, expected_pitch_x):
         if 0 <= x < width:
             image[:, max(0, x - 1):min(width, x + 1)] = 125
     for y in np.arange(expected_y0 - 40 * expected_pitch_y,
