@@ -10,6 +10,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from USE_LATEST.use_gray_wafer_die_particle import (
+    _estimate_center_above_guide_y,
     _select_cross_origin,
     detect_thin_cross_grid,
 )
@@ -61,10 +62,21 @@ def main() -> None:
         x_bands, y_bands, 100, 100, 50, 50, origin_mode="center_scored")
     assert default_cross == (75.0, 85.0), default_cross
     assert scored_cross == (100.0, 85.0), scored_cross
+
+    # Guide-line fallback: directional morphology can be empty on a weak image,
+    # but the weak row ridge still recovers the expected feature above center.
+    horizontal_profile = np.zeros(160, dtype=np.float64)
+    ridge_profile = np.zeros(160, dtype=np.float64)
+    ridge_profile[78:87] = 2.0
+    ridge_profile[82] = 10.0  # global y = 1000 + 82 = 1082
+    guide_y = _estimate_center_above_guide_y(
+        horizontal_profile, ridge_profile, 1000, 1110, 39.0)
+    assert abs(guide_y - 1082.0) <= 3.0, guide_y
     print({
         "expected": (expected_pitch_x, expected_pitch_y, expected_x0, expected_y0),
         "detected": (round(pitch_x, 3), round(pitch_y, 3), x0, y0),
         "center_score_cross": scored_cross,
+        "fallback_guide_y": guide_y,
     })
 
 

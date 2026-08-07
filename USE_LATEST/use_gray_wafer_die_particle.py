@@ -609,19 +609,46 @@ def _keep_periodic_candidates(bands: List[Tuple[float, int, int, float]],
     return [band for band, score in scored if score >= max(0.35, best * 0.70)]
 
 
+def _estimate_center_above_guide_y(horizontal_profile: np.ndarray,
+                                   ridge_profile: np.ndarray,
+                                   roi_y0: int, wafer_cy: float,
+                                   pitch_y: float) -> float:
+    """Estimate a weak horizontal guide when no reliable guide band survives.
+
+    Search only the expected area just above the wafer center.  Directional
+    horizontal support is preferred; the raw ridge projection contributes a
+    smaller fallback signal when a broken/weak guide cannot survive morphology.
+    """
+    horizontal = np.asarray(horizontal_profile, dtype=np.float64).reshape(-1)
+    ridge = np.asarray(ridge_profile, dtype=np.float64).reshape(-1)
+    if horizontal.size == 0 or ridge.size != horizontal.size:
+        return float(wafer_cy - max(1, int(round(pitch_y * 0.46))))
+
+    def normalize(values: np.ndarray) -> np.ndarray:
+        lo, hi = np.percentile(values, (10, 95))
+        if hi <= lo + 1e-9:
+            return np.zeros_like(values)
+        return np.clip((values - lo) / (hi - lo), 0.0, 1.0)
+
+    score = normalize(horizontal) + 0.35 * normalize(ridge)
+    score = np.asarray(_smooth_projection(score, 3), dtype=np.float64)
+    expected_offset = max(1, int(round(float(pitch_y) * 0.46)))
+    min_offset = max(2, int(round(float(pitch_y) * 0.12)))
+    start_y = int(round(wafer_cy - max(float(pitch_y) * 1.20, min_offset + 1)))
+    end_y = int(round(wafer_cy - min_offset))
+    start = max(0, start_y - int(roi_y0))
+    end = min(score.size, end_y - int(roi_y0) + 1)
+    if start >= end or float(score[start:end].max()) <= 1e-9:
+        return float(wafer_cy - expected_offset)
+    return float(int(roi_y0) + start + int(np.argmax(score[start:end])))
+
+
 def _select_cross_origin(x_bands: List[Tuple[float, int, int, float]],
                          y_bands: List[Tuple[float, int, int, float]],
                          wafer_cx: float, wafer_cy: float,
                          pitch_x: float, pitch_y: float,
                          origin_mode: str = "gv_boundary") -> Tuple[float, float]:
     """Select central thin vertical/horizontal ridges and form their cross origin."""
-    if not x_bands or not y_bands:
-        raise RuntimeError("No thin vertical/horizontal cross candidates were found near wafer center.")
-
-    # Grid origin must be a central cross. Restricting this first prevents a stronger
-    # but distant defect/noise intersection from winning only by projection strength.
-    near_x = [band for band in x_bands if abs(band[0] - wafer_cx) <= max(2.0, pitch_x * 1.15)]
-    near_y = [band for band in y_bands if abs(band[0] - wafer_cy) <= max(2.0, pitch_y * 1.15)]
     mode = str(origin_mode).lower().strip()
     if mode in ("center", "center_score", "center_scored", "score"):
         mode = "center_scored"
@@ -629,6 +656,14 @@ def _select_cross_origin(x_bands: List[Tuple[float, int, int, float]],
         mode = "gv_boundary"
     else:
         raise ValueError("cross_origin_mode must be 'gv_boundary' or 'center_scored'.")
+
+    if not y_bands or (not x_bands and mode != "center_scored"):
+        raise RuntimeError("No thin vertical/horizontal cross candidates were found near wafer center.")
+
+    # Grid origin must be a central cross. Restricting this first prevents a stronger
+    # but distant defect/noise intersection from winning only by projection strength.
+    near_x = [band for band in x_bands if abs(band[0] - wafer_cx) <= max(2.0, pitch_x * 1.15)]
+    near_y = [band for band in y_bands if abs(band[0] - wafer_cy) <= max(2.0, pitch_y * 1.15)]
 
     periodic_x = _keep_periodic_candidates(x_bands, pitch_x)
     periodic_y = _keep_periodic_candidates(y_bands, pitch_y)
@@ -738,16 +773,24 @@ def detect_thin_cross_grid(image: np.ndarray,
         y_bands = _find_projection_bands(y_profile, y0, 1, 0.10, 0.35, 0.1)
         y_bands = [band for band in y_bands if band[2] - band[1] <= thin_width_max + 2]
     x_bands = _discard_subpitch_bands(x_bands, min_pitch)
-    if len(x_bands) < 2 or len(y_bands) < 2:
-        raise RuntimeError(
-            "Thin cross grid was not found. Check focus/contrast or increase thin_width_max only when real streets are wider.")
-
     sx = np.abs(cv2.Sobel(cv2.GaussianBlur(gray, (0, 0), 1.2), cv2.CV_32F, 1, 0, ksize=3))
     sy = np.abs(cv2.Sobel(cv2.GaussianBlur(gray, (0, 0), 1.2), cv2.CV_32F, 0, 1, ksize=3))
     rough_x = _safe_autocorr_period(sx.mean(axis=0), min_pitch, max_pitch, (min_pitch + (max_pitch or min_pitch)) / 2.0)
     rough_y = _safe_autocorr_period(sy.mean(axis=1), min_pitch, max_pitch, (min_pitch + (max_pitch or min_pitch)) / 2.0)
-    pitch_x = _median_band_spacing(x_bands, rough_x, min_pitch, max_pitch)
-    pitch_y = _median_band_spacing(y_bands, rough_y, min_pitch, max_pitch)
+    pitch_x = (_median_band_spacing(x_bands, rough_x, min_pitch, max_pitch)
+               if len(x_bands) >= 2 else float(rough_x))
+    pitch_y = (_median_band_spacing(y_bands, rough_y, min_pitch, max_pitch)
+               if len(y_bands) >= 2 else float(rough_y))
+    mode = str(cross_origin_mode).lower().strip()
+    if mode in ("center", "center_score", "center_scored", "score"):
+        near_y = [band for band in y_bands if abs(band[0] - wafer_cy) <= pitch_y * 1.15]
+        if len(y_bands) < 2 or not near_y:
+            guide_y = _estimate_center_above_guide_y(
+                horizontal.mean(axis=1), ridge.mean(axis=1), y0, wafer_cy, pitch_y)
+            y_bands = [(guide_y, int(round(guide_y)), int(round(guide_y)) + 1, 0.0)]
+    elif len(x_bands) < 2 or len(y_bands) < 2:
+        raise RuntimeError(
+            "Thin cross grid was not found. Check focus/contrast or increase thin_width_max only when real streets are wider.")
     cross_x, cross_y = _select_cross_origin(
         x_bands, y_bands, wafer_cx, wafer_cy, pitch_x, pitch_y,
         origin_mode=cross_origin_mode)
