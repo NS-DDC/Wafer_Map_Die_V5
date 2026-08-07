@@ -38,10 +38,10 @@ dm = build_die_map(
 | wafer radius | `1412` px |
 | `pitch_x`, `pitch_y` | `44.979`, `39.000` px |
 | corner `(x0, y0)` | `(1502, 1492)` px |
-| partial Die 포함 map Die 수 | `3694` |
-| 실제 원-사각형 교차 EDGE | `268` |
-| 기존 중심점 방식이 찾은 EDGE | `142` |
-| 기존 방식 누락 EDGE | `126` |
+| partial Die 포함 map Die 수 | `3708` |
+| 실제 원-사각형 교차 EDGE | `270` |
+| 기존 중심점 방식이 찾은 EDGE | `138` |
+| 기존 방식 누락 EDGE | `132` |
 
 ![3000px Gray preview](wafer_1_gray_preview.png)
 
@@ -53,7 +53,7 @@ dm = build_die_map(
 
 중심 확대 이미지에서 노란색은 폭 제한을 통과한 세로/가로 후보, 하늘색은 선택한 두 축, 자홍색 십자는 최종 교차점이다. 노란 세로 후보는 강한 회색/흰색 노이즈 lane이므로 `x0`으로 쓰지 않는다. 가장 가까운 반복 lane을 기준으로 wafer 중심 방향에 있는 다음 lane 사이의 중간, 즉 `pitch_x/2` 이동한 약한 GV 경계를 하늘색 `x0`으로 사용한다. 가로 후보는 내부 질감의 약 9px 반복이 아닌, 가로 방향으로 연속된 39px 간격의 얇은 선을 사용한다.
 
-이번 TEST 이미지의 최종 십자가는 `(1480, 1482)`이며, `pitch_x=44.979`, `pitch_y=39.000`이다. `validate_thin_cross_grid.py`는 16px 폭의 밝은 세로 노이즈를 중심 근처에 일부러 넣어도, 노이즈 lane이 아닌 `pitch_x/2` 이동한 GV 경계와 올바른 pitch를 찾는지 검사한다.
+이번 TEST 이미지에서 `center_scored` 최종 십자가는 `(1500, 1482)`이며, `pitch_x=44.979`, `pitch_y=39.000`이다. x는 wafer center를 그대로 쓰고 y만 center보다 위의 가로 cross로 선택한다. `validate_thin_cross_grid.py`는 16px 폭의 밝은 세로 노이즈를 중심 근처에 일부러 넣어도, `gv_boundary` 모드가 lane이 아닌 `pitch_x/2` 이동한 GV 경계와 올바른 pitch를 찾는지 검사한다.
 
 ## 수정한 판정 로직
 

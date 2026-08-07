@@ -643,27 +643,21 @@ def _select_cross_origin(x_bands: List[Tuple[float, int, int, float]],
         return float(noise_band[0] + direction_to_center * pitch_x * 0.5)
 
     if mode == "center_scored":
-        # Score actual cross candidates, rather than trusting a single strongest
-        # feature.  The distance is normalized by pitch so both axes contribute
-        # comparably even when pitch_x and pitch_y differ.
-        score_x = [band for band in periodic_x if abs(band[0] - wafer_cx) <= pitch_x * 2.2]
+        # This wafer type has a stable physical prior: the feature x coordinate
+        # is essentially the wafer center.  Do not move it half a pitch onto an
+        # inferred boundary when a bright vertical lane dominates the image.
+        # Vertical lanes are retained only for pitch_x measurement.
         score_y = [band for band in periodic_y if abs(band[0] - wafer_cy) <= pitch_y * 2.2]
-        score_x = score_x or candidate_x
         score_y = score_y or candidate_y
         # The real Gray-wafer corner feature is consistently a little above the
         # wafer center.  Prefer that physical side even when a noisy lower row
         # lies one or two pixels closer; use lower rows only as a fallback.
         upper_score_y = [band for band in score_y if band[0] <= wafer_cy]
         score_y = upper_score_y or score_y
-        candidates = [(gv_boundary_from_noise(x_band), float(y_band[0]))
-                      for x_band in score_x for y_band in score_y]
-        selected_x, selected_y = max(
-            candidates,
-            key=lambda point: -math.hypot(
-                (point[0] - wafer_cx) / max(pitch_x, 1e-6),
-                (point[1] - wafer_cy) / max(pitch_y, 1e-6)),
-        )
-        return float(selected_x), float(selected_y)
+        # x stays at the measured wafer center; score only the allowed upper
+        # horizontal rows by their distance from it.
+        selected_y = min(score_y, key=lambda band: abs(band[0] - wafer_cy))
+        return float(wafer_cx), float(selected_y[0])
 
     selected_noise_x = min(candidate_x, key=lambda band: abs(band[0] - wafer_cx))
     selected_x = gv_boundary_from_noise(selected_noise_x)
@@ -2427,8 +2421,8 @@ def build_die_map(image: Union[str, Path, np.ndarray],
                        "half_pitch"는 항상 이동한다.
     cross_origin_mode: cross 방식의 중심 corner 선택. "gv_boundary"(기본)는 중심에 가장 가까운
                        반복 세로 노이즈 lane에서 GV 경계로 이동한다. "center_scored"는 GV 경계와
-                       가로 cross 후보의 모든 조합에 중심 근접 점수를 매겨 가장 높은 점을 선택한다.
-                       이 Gray wafer의 특징에 따라 중심보다 위쪽 y 후보를 우선한다.
+                       x0을 wafer center x에 맞추고, 가로 cross 후보 중 중심에 가장 가까운 위쪽 y를
+                       선택한다. 이 Gray wafer의 특징에 따라 중심보다 위쪽 y 후보를 우선한다.
     pixel_per_unit   : 실측 좌표 환산 (px/unit)
     include_edge     : True 면 웨이퍼 원 안 die 전부 포함(가장자리 잘린 die 포함).
     edge_margin      : die 포함 기준 = (중심거리 <= r * edge_margin).
