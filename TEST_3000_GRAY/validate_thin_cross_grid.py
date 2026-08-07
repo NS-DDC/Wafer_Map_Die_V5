@@ -52,15 +52,15 @@ def main() -> None:
     assert abs(x0 - expected_x0) <= 3, (x0, expected_x0)
     assert abs(y0 - expected_y0) <= 3, (y0, expected_y0)
 
-    # New mode: choose the candidate pair closest to the wafer center, not
-    # necessarily the last horizontal candidate at/before the center.
+    # New mode: the physical feature is above center, so a noisy lower row that
+    # is closer must not beat the nearest valid upper cross row.
     x_bands = [(100.0, 99, 101, 1.0), (150.0, 149, 151, 1.0)]
-    y_bands = [(70.0, 69, 71, 1.0), (103.0, 102, 104, 1.0)]
+    y_bands = [(85.0, 84, 86, 1.0), (101.0, 100, 102, 1.0)]
     default_cross = _select_cross_origin(x_bands, y_bands, 100, 100, 50, 50)
     scored_cross = _select_cross_origin(
         x_bands, y_bands, 100, 100, 50, 50, origin_mode="center_scored")
-    assert default_cross == (75.0, 70.0), default_cross
-    assert scored_cross == (75.0, 103.0), scored_cross
+    assert default_cross == (75.0, 85.0), default_cross
+    assert scored_cross == (75.0, 85.0), scored_cross
     print({
         "expected": (expected_pitch_x, expected_pitch_y, expected_x0, expected_y0),
         "detected": (round(pitch_x, 3), round(pitch_y, 3), x0, y0),

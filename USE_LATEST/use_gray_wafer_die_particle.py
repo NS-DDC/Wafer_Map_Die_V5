@@ -650,6 +650,11 @@ def _select_cross_origin(x_bands: List[Tuple[float, int, int, float]],
         score_y = [band for band in periodic_y if abs(band[0] - wafer_cy) <= pitch_y * 2.2]
         score_x = score_x or candidate_x
         score_y = score_y or candidate_y
+        # The real Gray-wafer corner feature is consistently a little above the
+        # wafer center.  Prefer that physical side even when a noisy lower row
+        # lies one or two pixels closer; use lower rows only as a fallback.
+        upper_score_y = [band for band in score_y if band[0] <= wafer_cy]
+        score_y = upper_score_y or score_y
         candidates = [(gv_boundary_from_noise(x_band), float(y_band[0]))
                       for x_band in score_x for y_band in score_y]
         selected_x, selected_y = max(
@@ -2423,6 +2428,7 @@ def build_die_map(image: Union[str, Path, np.ndarray],
     cross_origin_mode: cross 방식의 중심 corner 선택. "gv_boundary"(기본)는 중심에 가장 가까운
                        반복 세로 노이즈 lane에서 GV 경계로 이동한다. "center_scored"는 GV 경계와
                        가로 cross 후보의 모든 조합에 중심 근접 점수를 매겨 가장 높은 점을 선택한다.
+                       이 Gray wafer의 특징에 따라 중심보다 위쪽 y 후보를 우선한다.
     pixel_per_unit   : 실측 좌표 환산 (px/unit)
     include_edge     : True 면 웨이퍼 원 안 die 전부 포함(가장자리 잘린 die 포함).
     edge_margin      : die 포함 기준 = (중심거리 <= r * edge_margin).
