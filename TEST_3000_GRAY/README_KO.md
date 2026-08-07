@@ -20,6 +20,9 @@ dm = build_die_map(
     min_pitch=30,
     max_pitch=70,
     notch_align=False,
+    clip_partial_edge=False,
+    edge_clip_margin_px=0,
+    edge_mode="circle",
 )
 ```
 
@@ -33,11 +36,13 @@ dm = build_die_map(
 | `pitch_x` | `44.979` px |
 | `pitch_y` | `39.000` px |
 | corner `(x0, y0)` | `(1502, 1492)` px |
-| 포함 Die 수 | `3419` |
-| 현재 edge Die 수 | `262` |
+| map Die 수 | `3564` (원에 걸치는 partial Die 포함) |
+| EDGE Die 수 | `124` |
 
 ![3000px Gray preview](wafer_1_gray_preview.png)
 
 ![Cross grid overlay preview](wafer_1_cross_overlay_preview.png)
 
-초록색은 일반 Die, 빨간색은 현재 edge 기준 Die, 하늘색은 wafer circle, 자홍색 십자는 선택한 central grid corner다.
+초록색은 wafer 원 안에 완전히 포함된 일반 Die, 빨간색은 **wafer 원을 한 모서리라도 넘는 모든 box**다. 즉 이 결과에서 EDGE는 최외곽 ring이 아니라 `is_edge_partial=True`인 circle-crossing Die만 의미한다. 하늘색은 wafer circle, 자홍색 십자는 선택한 central grid corner다.
+
+실사용에서도 같은 EDGE 정의가 필요하면 `clip_partial_edge=False`, `edge_clip_margin_px=0`, `edge_mode="circle"`을 함께 사용한다. partial Die를 결과 map에서 제거해야 하는 검사 흐름에서는 `clip_partial_edge=True`로 바꾸되, 그 경우 partial EDGE box 자체는 `dm.dies`에서 제외된다.

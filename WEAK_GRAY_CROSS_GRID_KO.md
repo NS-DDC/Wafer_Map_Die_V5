@@ -21,6 +21,19 @@ print(dm.x0, dm.y0)
 print(dm.pitch_x, dm.pitch_y)
 ```
 
+원에 걸치는 모든 box를 EDGE로 표시하려면 아래처럼 설정한다.
+
+```python
+edge_dm = build_die_map(
+    image,
+    grid_method="cross",
+    clip_partial_edge=False,
+    edge_clip_margin_px=0,
+    edge_mode="circle",
+)
+# edge_dm.edge_indices == wafer 원을 실제로 넘는 Die index 목록
+```
+
 ## 검출 규칙
 
 1. 입력 Gray/BGR/BGRA를 BGR과 uint8 Gray로 안전하게 정규화한다.
