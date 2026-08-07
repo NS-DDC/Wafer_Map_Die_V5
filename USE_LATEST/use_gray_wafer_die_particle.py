@@ -91,7 +91,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import cv2
 import numpy as np
 
-__all__ = ["WaferDieMap", "build_die_map", "locate_die", "crop_die",
+__all__ = ["WaferDieMap", "build_die_map", "locate_die", "crop_die", "detect_wafer", "detect_grid",
+           "detect_thin_cross_grid",
            "detect_notch_angle", "detect_notch", "align_wafer_by_notch",
            "align_wafer_by_vertical_line", "clean_wafer",
            "measure_die_grid_angle", "measure_vertical_line_angle",
@@ -115,23 +116,83 @@ __all__ = ["WaferDieMap", "build_die_map", "locate_die", "crop_die",
 # =============================================================================
 # 1) Wafer 영역(원) 검출
 # =============================================================================
+def _as_bgr(image: np.ndarray) -> np.ndarray:
+    """Normalize direct Gray/BGR/BGRA input for public detection functions."""
+    if not isinstance(image, np.ndarray) or image.size == 0:
+        raise ValueError("image must be a non-empty numpy array")
+    if image.ndim == 2:
+        return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    if image.ndim != 3:
+        raise ValueError("image must have shape (H,W), (H,W,1), (H,W,3), or (H,W,4)")
+    if image.shape[2] == 1:
+        return cv2.cvtColor(image[:, :, 0], cv2.COLOR_GRAY2BGR)
+    if image.shape[2] == 3:
+        return image
+    if image.shape[2] == 4:
+        return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+    raise ValueError("image must have 1, 3, or 4 channels")
+
+
+def _gray_u8(image: np.ndarray) -> np.ndarray:
+    """Return a stable uint8 gray image for threshold and morphology operations."""
+    bgr = _as_bgr(image)
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    if gray.dtype == np.uint8:
+        return gray
+    return cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
+
 def detect_wafer(image_bgr: np.ndarray,
                  bg_threshold: int = 20) -> Tuple[int, int, int]:
-    """검정 배경을 제외한 가장 큰 contour 를 wafer 로 간주. -> (cx, cy, radius)."""
-    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    _, mask = cv2.threshold(gray, bg_threshold, 255, cv2.THRESH_BINARY)
+    """Detect wafer center/radius from Gray or color input, including weak signals.
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    Multiple low thresholds are evaluated because a fixed threshold of 20 can
+    split a weak 1-channel wafer into small islands. Candidates that look like
+    a large, near-circular object are preferred; a full-image noise component
+    is rejected instead of becoming a false wafer circle.
+    """
+    gray = _gray_u8(image_bgr)
+    height, width = gray.shape
+    blurred = cv2.GaussianBlur(gray, (0, 0), sigmaX=1.2)
+    otsu_level, _ = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    low_nonzero = float(np.percentile(blurred[blurred > 0], 8)) if np.any(blurred > 0) else 0.0
+    thresholds = sorted({
+        max(1, int(bg_threshold)),
+        max(1, int(round(otsu_level * 0.35))),
+        max(1, int(round(otsu_level * 0.65))),
+        max(1, int(round(low_nonzero))),
+    })
+    kernel_size = max(5, int(round(min(height, width) * 0.004)) | 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    image_center = (width / 2.0, height / 2.0)
+    best: Optional[Tuple[float, np.ndarray]] = None
 
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        raise RuntimeError("Wafer region not found "
-                           "(전부 배경이거나 bg_threshold 가 너무 높음).")
-    wafer_cnt = max(contours, key=cv2.contourArea)
+    for threshold in thresholds:
+        _, mask = cv2.threshold(blurred, threshold, 255, cv2.THRESH_BINARY)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            area = float(cv2.contourArea(contour))
+            if area < height * width * 0.02:
+                continue
+            (cx, cy), radius = cv2.minEnclosingCircle(contour)
+            # A component touching nearly the whole frame is background/noise, not a wafer.
+            if radius > min(height, width) * 0.60:
+                continue
+            perimeter = max(float(cv2.arcLength(contour, True)), 1.0)
+            circularity = min(1.0, 4.0 * math.pi * area / (perimeter * perimeter))
+            center_distance = math.hypot(cx - image_center[0], cy - image_center[1])
+            centered = max(0.0, 1.0 - center_distance / max(radius, 1.0))
+            coverage = min(1.0, area / (math.pi * radius * radius + 1e-6))
+            score = circularity * 0.55 + centered * 0.25 + coverage * 0.20
+            if best is None or score > best[0]:
+                best = (score, contour)
 
-    (cx, cy), radius = cv2.minEnclosingCircle(wafer_cnt)
+    if best is None:
+        raise RuntimeError(
+            "Wafer region not found. Check bg_threshold or confirm that the image has a dark background.")
+    (cx, cy), radius = cv2.minEnclosingCircle(best[1])
     return int(round(cx)), int(round(cy)), int(round(radius))
 
 
@@ -480,6 +541,108 @@ def _choose_corner_x_origin(x_bands: List[Tuple[float, int, int, float]],
     return float(selected[0] + math.copysign(pitch_x * 0.5, toward_center)), True
 
 
+def _safe_autocorr_period(profile: np.ndarray, min_pitch: int,
+                          max_pitch: Optional[int], fallback: float) -> float:
+    """Autocorrelation fallback that never escapes the requested pitch range."""
+    try:
+        return float(_autocorr_period(profile, min_lag=min_pitch, max_lag=max_pitch))
+    except RuntimeError:
+        lower = float(min_pitch)
+        upper = float(max_pitch) if max_pitch is not None else max(lower, fallback)
+        return min(max(float(fallback), lower), upper)
+
+
+def _select_cross_origin(x_bands: List[Tuple[float, int, int, float]],
+                         y_bands: List[Tuple[float, int, int, float]],
+                         wafer_cx: float, wafer_cy: float,
+                         pitch_x: float, pitch_y: float) -> Tuple[float, float]:
+    """Select central thin vertical/horizontal ridges and form their cross origin."""
+    if not x_bands or not y_bands:
+        raise RuntimeError("No thin vertical/horizontal cross candidates were found near wafer center.")
+
+    # Grid origin must be a central cross. Restricting this first prevents a stronger
+    # but distant defect/noise intersection from winning only by projection strength.
+    near_x = [band for band in x_bands if abs(band[0] - wafer_cx) <= max(2.0, pitch_x * 1.15)]
+    near_y = [band for band in y_bands if abs(band[0] - wafer_cy) <= max(2.0, pitch_y * 1.15)]
+    candidate_x = near_x if near_x else x_bands
+    candidate_y = near_y if near_y else y_bands
+    # Directional opening can shift a physical 1px crossing by one pixel in each
+    # direction. Pick axes independently after width filtering; their geometric
+    # intersection is the grid corner and is more stable than exact mask overlap.
+    selected_x = min(candidate_x, key=lambda band: abs(band[0] - wafer_cx))
+    upper_y = [band for band in candidate_y if band[0] <= wafer_cy]
+    selected_y = max(upper_y, key=lambda band: band[0]) if upper_y else min(
+        candidate_y, key=lambda band: abs(band[0] - wafer_cy))
+    return float(selected_x[0]), float(selected_y[0])
+
+
+def detect_thin_cross_grid(image: np.ndarray,
+                           wafer_cx: int, wafer_cy: int, wafer_r: int,
+                           roi_half: Optional[int] = None,
+                           min_pitch: int = 30,
+                           max_pitch: Optional[int] = 70,
+                           thin_width_max: int = 4) -> Tuple[float, float, int, int]:
+    """Detect a weak Gray grid from narrow vertical/horizontal cross ridges.
+
+    A local high-pass image is opened separately in vertical and horizontal
+    directions. Physical 1-2 px lines become up to 4 px after local contrast
+    enhancement, so only bands up to ``thin_width_max`` are retained.
+    A wide vertical noise band can survive the vertical opening, but it cannot
+    become the origin because it is rejected by width and paired with a narrow
+    horizontal ridge near the wafer center. ``pitch_x`` is measured from left/right vertical
+    cross positions and ``pitch_y`` from upper/lower horizontal cross positions.
+    """
+    if max_pitch is not None and max_pitch < min_pitch:
+        raise ValueError("max_pitch must be greater than or equal to min_pitch")
+    bgr = _as_bgr(image)
+    height, width = bgr.shape[:2]
+    if roi_half is None:
+        roi_half = min(700, max(180, int(wafer_r * 0.30)))
+    x0 = max(0, int(wafer_cx - roi_half))
+    x1 = min(width, int(wafer_cx + roi_half))
+    y0 = max(0, int(wafer_cy - roi_half))
+    y1 = min(height, int(wafer_cy + roi_half))
+    gray = _gray_u8(bgr[y0:y1, x0:x1])
+
+    # CLAHE keeps low-amplitude 1-2 px grid ridges visible without a global brightness assumption.
+    enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(32, 32)).apply(gray)
+    local_base = cv2.GaussianBlur(enhanced, (0, 0), sigmaX=1.25)
+    ridge = cv2.absdiff(enhanced, local_base)
+    otsu_level, _ = cv2.threshold(ridge, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    ridge_threshold = max(2, int(round(otsu_level)), int(round(np.percentile(ridge, 82))))
+    thin_mask = (ridge >= ridge_threshold).astype(np.uint8) * 255
+
+    line_length = max(9, int(round(min_pitch * 0.45)))
+    vertical = cv2.morphologyEx(
+        thin_mask, cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (1, line_length)))
+    horizontal = cv2.morphologyEx(
+        thin_mask, cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (line_length, 1)))
+    x_profile = _smooth_projection(vertical.mean(axis=0), 3)
+    # A wide vertical-noise stripe can break a horizontal opening at its crossing.
+    # The row ridge projection keeps the horizontal cross positions continuous.
+    y_profile = _smooth_projection(ridge.mean(axis=1), 3)
+    x_bands = _find_projection_bands(x_profile, x0, 1, 0.10, 0.35, 0.1)
+    y_bands = _find_projection_bands(y_profile, y0, 1, 0.10, 0.35, 0.1)
+    x_bands = [band for band in x_bands if band[2] - band[1] <= thin_width_max]
+    # The 3px projection smoothing makes a physical 1-2px horizontal ridge appear up to 6px.
+    y_bands = [band for band in y_bands if band[2] - band[1] <= thin_width_max + 2]
+    if len(x_bands) < 2 or len(y_bands) < 2:
+        raise RuntimeError(
+            "Thin cross grid was not found. Check focus/contrast or increase thin_width_max only when real streets are wider.")
+
+    sx = np.abs(cv2.Sobel(cv2.GaussianBlur(gray, (0, 0), 1.2), cv2.CV_32F, 1, 0, ksize=3))
+    sy = np.abs(cv2.Sobel(cv2.GaussianBlur(gray, (0, 0), 1.2), cv2.CV_32F, 0, 1, ksize=3))
+    rough_x = _safe_autocorr_period(sx.mean(axis=0), min_pitch, max_pitch, (min_pitch + (max_pitch or min_pitch)) / 2.0)
+    rough_y = _safe_autocorr_period(sy.mean(axis=1), min_pitch, max_pitch, (min_pitch + (max_pitch or min_pitch)) / 2.0)
+    pitch_x = _median_band_spacing(x_bands, rough_x, min_pitch, max_pitch)
+    pitch_y = _median_band_spacing(y_bands, rough_y, min_pitch, max_pitch)
+    cross_x, cross_y = _select_cross_origin(
+        x_bands, y_bands, wafer_cx, wafer_cy, pitch_x, pitch_y)
+    return float(pitch_x), float(pitch_y), int(round(cross_x)), int(round(cross_y))
+
+
 def detect_corner_grid(image_bgr: np.ndarray,
                        wafer_cx: int, wafer_cy: int, wafer_r: int,
                        roi_half: Optional[int] = None,
@@ -562,10 +725,10 @@ def detect_corner_grid(image_bgr: np.ndarray,
 
 def detect_grid(image_bgr: np.ndarray,
                 wafer_cx: int, wafer_cy: int, wafer_r: int,
-                method: str = "corner",
+                method: str = "cross",
                 roi_ratio: float = 0.6,
-                min_pitch: int = 50,
-                max_pitch: Optional[int] = None,
+                min_pitch: int = 30,
+                max_pitch: Optional[int] = 70,
                 corner_x0_mode: str = "auto",
                 die_template_bgr: Optional[np.ndarray] = None,
                 line_hue: Optional[int] = None,
@@ -575,8 +738,13 @@ def detect_grid(image_bgr: np.ndarray,
                 ) -> Tuple[float, float, int, int]:
     """Die 격자 (pitch + origin) 자동 검출. -> (pitch_x, pitch_y, x0, y0).
 
-    method: "corner"(기본, street 선으로 코너 직접 검출) | "std" | "color" | "hybrid"
+    method: "cross"(기본, 1-2px 십자 ridge) | "corner" | "std" | "color" | "hybrid"
     """
+    image_bgr = _as_bgr(image_bgr)
+    if method in ("cross", "thin_cross", "weak_gray"):
+        return detect_thin_cross_grid(
+            image_bgr, wafer_cx, wafer_cy, wafer_r,
+            min_pitch=min_pitch, max_pitch=max_pitch)
     # "corner" : 밝은 wafer street 선 자체를 mask 로 잡아 코너 교차점을 직접 검출.
     if method in ("corner", "corner_grid", "street"):
         return detect_corner_grid(
@@ -698,8 +866,7 @@ def clip_die(image: np.ndarray, center_x: int, center_y: int,
 # - wafer ring particle 검사의 partial die 포함 mask: die 내부의 밝은 회로선을 particle로
 #   잘못 검출하지 않기 위한 장치이므로, 일반 die map의 edge clip과 분리해 유지해야 한다.
 #
-DEFAULT_GRID_METHOD = "corner"   # "corner"(권장, street 선으로 코너 직접 검출) | "hybrid" | "std" | "color"
-                                 # Gray wafer처럼 die 내부 무늬가 강하면 "std"가 더 안정적일 수 있다.
+DEFAULT_GRID_METHOD = "cross"    # 약한 1채널 Gray: 1-2px 십자 ridge 기반. 필요 시 corner/std/color/hybrid 선택 가능.
 DEFAULT_PIXEL_PER_UNIT = 32      # 실측 좌표 환산 (px / unit). real_coord의 단위만 바뀌며 grid 검출에는 영향 없음.
 DEFAULT_EDGE_MARGIN = 1.0        # die 중심 포함 기준: 중심거리 <= wafer_r * 이 값.
                                  # 작게 하면 가장자리 die가 더 일찍 빠진다. 1.0보다 크게 하면 wafer 밖 후보도 늘 수 있다.
@@ -722,7 +889,7 @@ DEFAULT_MARGIN_X = 0   # 좌/우로 각각 더 포함할 영역 (px). die 폭이
 DEFAULT_MARGIN_Y = 0   # 상/하로 각각 더 포함할 영역 (px). die 높이가 +2*margin_y 만큼 커짐. 이웃 die까지 포함되지 않게 주의.
 
 # --- Notch 회전(angle) 보정 ---------------------------------------------------
-DEFAULT_NOTCH_ALIGN = True       # build_die_map 시작 시 notch 로 회전 보정 (notch 없으면 자동 skip)
+DEFAULT_NOTCH_ALIGN = False      # 약한 1채널 기본은 회전 검출 실패를 피하기 위해 보정 끔. 필요 시 True로 켠다.
 DEFAULT_NOTCH_REF_DEG = 90.0     # notch 의 정상 위치 (이미지 좌표 각도. 90 = 아래쪽/6시 방향)
 DEFAULT_NOTCH_MIN_ANGLE = 0.05   # 이보다 작은 오차(deg)는 보정 생략 (불필요한 워핑 방지)
 DEFAULT_NOTCH_MIN_DEPTH = 4.0    # notch 인정 절대 최소 파임 깊이 (px). 엣지 노이즈 하한
@@ -732,7 +899,7 @@ DEFAULT_NOTCH_OPEN_KSIZE = 3     # ★ 림 컬러 노이즈 강인성: 경계를
                                  #   잡고, 이 크기 open 으로 얇은 노이즈 다리를 끊음(0=open끔)
 
 # --- Angle alignment method --------------------------------------------------
-DEFAULT_ANGLE_ALIGN_METHOD = "die_render"  # "die_render"(V5 기본) | "notch" | "vertical_line" | "none"
+DEFAULT_ANGLE_ALIGN_METHOD = "none"        # weak Gray 기본은 grid/center 검출 후 필요할 때만 보정을 켠다.
 
 # --- die_render 얼라인 (검출 die 를 굵기 3 사각형으로 렌더한 격자에 sawline 정합) ---
 DEFAULT_DIE_RENDER_THICKNESS = 3   # ★ dm.dies 를 cv2.rectangle 이 굵기로 렌더(=sawline 모양)
@@ -2082,8 +2249,8 @@ def validate_quadrant_edges(dies: List[Dict[str, Any]],
 def build_die_map(image: Union[str, Path, np.ndarray],
                   *,
                   grid_method: str = DEFAULT_GRID_METHOD,
-                  min_pitch: int = 50,
-                  max_pitch: Optional[int] = None,
+                  min_pitch: int = 30,
+                  max_pitch: Optional[int] = 70,
                   corner_x0_mode: str = "auto",
                   pixel_per_unit: int = DEFAULT_PIXEL_PER_UNIT,
                   include_edge: bool = True,
@@ -2114,7 +2281,7 @@ def build_die_map(image: Union[str, Path, np.ndarray],
     Parameters
     ----------
     image            : wafer 이미지 경로(str/Path) 또는 BGR ndarray
-    grid_method      : 격자 검출 방식 "corner"(기본) | "hybrid" | "std" | "color"
+    grid_method      : 격자 검출 방식 "cross"(기본, 1-2px 십자) | "corner" | "hybrid" | "std" | "color"
     min_pitch/max_pitch: 허용할 die pitch 범위(px). max_pitch는 hard upper bound이다.
                           예: `max_pitch=70`이면 반환 pitch_x/y도 70을 넘지 않는다.
     corner_x0_mode   : corner 방식의 x0 보정. "auto"(기본)는 강하고 넓은 세로 흰 노이즈를
@@ -2127,7 +2294,7 @@ def build_die_map(image: Union[str, Path, np.ndarray],
     with_crops       : True 면 각 die entry 에 "image"(crop) 포함.
     border_mode      : with_crops 시 clip 방식 "pad" | "crop".
     offset_x/offset_y, margin_x/margin_y : crop 위치보정 / 영역확장 (px).
-    notch_align      : True(기본) 면 angle_align_method 로 회전(angle) 보정.
+    notch_align      : False(기본) 면 약한 1채널 신호를 그대로 사용. 회전 보정이 필요할 때만 True.
     notch_ref_deg    : notch 의 정상 위치 (90 = 아래쪽/6시 방향).
     angle_align_method: "die_render"(V5 기본) | "notch" | "vertical_line" | "none".
     edge_clip_margin_px: map 포함 원을 줄이는 안전 여유(px). 키울수록 wafer 외곽 die를 더 제거.

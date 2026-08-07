@@ -34,7 +34,9 @@ if image is None:
 
 die_map = build_die_map(
     image,
-    grid_method="std",
+    grid_method="cross",
+    min_pitch=30,
+    max_pitch=70,
     notch_align=False,
     clip_partial_edge=True,
     edge_clip_margin_px=8,
@@ -61,10 +63,10 @@ print(die_map.edge_index_report["margin"])
 
 | 파라미터 | 기본값 | 용도 |
 | --- | --- | --- |
-| `grid_method` | `"corner"` | grid 추출 방식. Gray wafer 검증에는 `"std"`를 사용했다. |
-| `min_pitch`, `max_pitch` | `50`, `None` | 허용할 pitch 범위(px). `max_pitch=70`이면 `pitch_x/y`는 70을 넘지 않는다. |
+| `grid_method` | `"cross"` | 약한 1채널 Gray 기본. 1~2px 세로/가로 ridge를 분리해 중심 부근 십자점을 찾는다. 기존 `corner`, `std`, `color`, `hybrid`도 선택 가능하다. |
+| `min_pitch`, `max_pitch` | `30`, `70` | 허용할 pitch 범위(px). 30~70px 범위를 hard bound로 적용한다. |
 | `corner_x0_mode` | `"auto"` | `corner` 방식에서 강하고 넓은 세로 흰 노이즈를 감지하면 wafer 중심 방향으로 `pitch_x/2` 이동한다. `nearest`는 보정 끔, `half_pitch`는 강제 보정이다. |
-| `notch_align` | `True` | 회전 보정 사용 여부. 이미 정렬된 Gray 이미지면 `False`가 안전하다. |
+| `notch_align` | `False` | 약한 Gray 기본은 회전 보정을 끈다. 실제 기울기가 확인된 경우에만 `True`로 켠다. |
 | `angle_align_method` | `"die_render"` | `die_render`, `notch`, `vertical_line`, `none` 중 선택한다. |
 | `clip_partial_edge` | `True` | wafer 외곽에 걸친 die를 map에서 제거한다. |
 | `edge_clip_margin_px` | 자동 | partial 판정 safety margin. `-1`이면 작은 pitch의 10%를 사용한다. |
