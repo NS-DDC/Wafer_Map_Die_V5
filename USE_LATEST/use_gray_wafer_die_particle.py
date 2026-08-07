@@ -1044,14 +1044,32 @@ class WaferDieMap:
         }
 
 
-def _rect_crosses_circle(x1: int, y1: int, x2: int, y2: int,
-                         cx: int, cy: int, r: int) -> bool:
+def _rect_intersects_circle(x1: float, y1: float, x2: float, y2: float,
+                            cx: float, cy: float, r: float) -> bool:
+    """Return True when any portion of a die rectangle lies in the wafer disc."""
+    left, right = sorted((float(x1), float(x2)))
+    top, bottom = sorted((float(y1), float(y2)))
+    nearest_x = min(max(float(cx), left), right)
+    nearest_y = min(max(float(cy), top), bottom)
+    return (nearest_x - cx) ** 2 + (nearest_y - cy) ** 2 <= float(r) ** 2
+
+
+def _rect_crosses_circle(x1: float, y1: float, x2: float, y2: float,
+                         cx: float, cy: float, r: float) -> bool:
     """die rect 의 한 모서리라도 웨이퍼 원 밖이면 True (=정의①: 부분 die)."""
-    r2 = r * r
-    for (px, py) in ((x1, y1), (x2, y1), (x1, y2), (x2, y2)):
-        if (px - cx) ** 2 + (py - cy) ** 2 > r2:
-            return True
-    return False
+    left, right = sorted((float(x1), float(x2)))
+    top, bottom = sorted((float(y1), float(y2)))
+    farthest = max(math.hypot(px - cx, py - cy)
+                   for px, py in ((left, top), (right, top),
+                                  (left, bottom), (right, bottom)))
+    if left <= cx <= right and top <= cy <= bottom:
+        # The circle center lies in this box, so use the nearest box boundary.
+        nearest = min(cx - left, right - cx, cy - top, bottom - cy)
+    else:
+        nearest_x = min(max(cx, left), right)
+        nearest_y = min(max(cy, top), bottom)
+        nearest = math.hypot(nearest_x - cx, nearest_y - cy)
+    return nearest <= float(r) <= farthest
 
 
 def _rect_circle_clearance(x1: int, y1: int, x2: int, y2: int,
@@ -2421,7 +2439,6 @@ def build_die_map(image: Union[str, Path, np.ndarray],
     max_iy = int(np.ceil(wafer_r / pitch_y)) + 2
     margin = edge_margin if include_edge else 0.98
     r_lim = max(0.0, wafer_r * margin - float(edge_clip_margin_px))
-    r_lim_sq = r_lim ** 2
 
     dies: List[Dict[str, Any]] = []
     dies_by_index: Dict[Tuple[int, int], Dict[str, Any]] = {}
@@ -2441,16 +2458,17 @@ def build_die_map(image: Union[str, Path, np.ndarray],
             cx_d = int(round((x_a + x_b) / 2.0))
             cy_d = int(round((y_a + y_b) / 2.0))
 
-            dx = cx_d - wafer_cx
-            dy = cy_d - wafer_cy
-            if dx * dx + dy * dy > r_lim_sq:     # 웨이퍼 원 밖 격자 위치 -> die 없음
+            # Do not discard a real edge die merely because its center falls
+            # outside the wafer circle.  The rectangle itself can still cross it.
+            if not _rect_intersects_circle(
+                    x_a, y_a, x_b, y_b, wafer_cx, wafer_cy, r_lim):
                 continue
 
             # 중심만 원 안에 있어도 사각형 일부가 wafer 밖으로 나갈 수 있다.
             # 제품 검사 map에서는 그런 partial die를 제거한다. 단, wafer ring particle 함수는
             # partial die 내부도 제외해야 하므로 별도 private map에서 이 옵션을 False로 쓴다.
             if clip_partial_edge and _rect_crosses_circle(
-                    x_a, y_a, x_b, y_b, wafer_cx, wafer_cy, int(round(r_lim))):
+                    x_a, y_a, x_b, y_b, wafer_cx, wafer_cy, r_lim):
                 continue
 
             cell_w = x_b - x_a
@@ -2472,7 +2490,8 @@ def build_die_map(image: Union[str, Path, np.ndarray],
                 "crop_rect_px": crop_rect,
                 "real_coord":  (rx, ry),
                 # 세 edge 기준을 모두 저장. is_edge는 아래서 edge_mode에 따라 선택한다.
-                "is_edge_partial": edge_distance_px < 0.0,
+                "is_edge_partial": _rect_crosses_circle(
+                    x_a, y_a, x_b, y_b, wafer_cx, wafer_cy, r_lim),
                 "is_edge_ring": False,   # 8방향 이웃 확정 후 채움
                 "edge_distance_px": round(edge_distance_px, 2),
                 "is_edge_margin": bool(0.0 <= edge_distance_px <= edge_index_margin_px),
@@ -2639,7 +2658,9 @@ def locate_die(die_map: WaferDieMap,
         edge_distance_px = _rect_circle_clearance(
             x_a, y_a, x_b, y_b,
             die_map.wafer_cx, die_map.wafer_cy, edge_limit_r)
-        is_edge_partial = edge_distance_px < 0.0
+        is_edge_partial = _rect_crosses_circle(
+            x1, y1, x2, y2, die_map.wafer_cx, die_map.wafer_cy,
+            edge_limit_r)
         edge_index_margin_px = int(getattr(die_map, "edge_index_margin_px", 0))
         is_edge_margin = bool(0.0 <= edge_distance_px <= edge_index_margin_px)
         is_edge_ring = any(

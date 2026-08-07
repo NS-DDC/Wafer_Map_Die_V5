@@ -109,6 +109,37 @@ def _rect_circle_clearance(x1: float, y1: float, x2: float, y2: float,
     return float(radius - farthest)
 
 
+def _rect_intersects_circle(x1: float, y1: float, x2: float, y2: float,
+                            cx: float, cy: float, radius: float) -> bool:
+    """Whether any portion of an axis-aligned die rectangle lies in the wafer."""
+    left, right = sorted((float(x1), float(x2)))
+    top, bottom = sorted((float(y1), float(y2)))
+    nearest_x = min(max(float(cx), left), right)
+    nearest_y = min(max(float(cy), top), bottom)
+    return (nearest_x - cx) ** 2 + (nearest_y - cy) ** 2 <= float(radius) ** 2
+
+
+def _rect_crosses_circle(x1: float, y1: float, x2: float, y2: float,
+                         cx: float, cy: float, radius: float) -> bool:
+    """Whether the wafer circle crosses the rectangle boundary.
+
+    It includes boxes whose centers sit outside the circle but whose area still
+    intersects it; those boxes are valid EDGE boxes.
+    """
+    left, right = sorted((float(x1), float(x2)))
+    top, bottom = sorted((float(y1), float(y2)))
+    farthest = max(math.hypot(x - cx, y - cy)
+                   for x, y in ((left, top), (right, top),
+                                (left, bottom), (right, bottom)))
+    if left <= cx <= right and top <= cy <= bottom:
+        nearest = min(cx - left, right - cx, cy - top, bottom - cy)
+    else:
+        nearest_x = min(max(cx, left), right)
+        nearest_y = min(max(cy, top), bottom)
+        nearest = math.hypot(nearest_x - cx, nearest_y - cy)
+    return nearest <= float(radius) <= farthest
+
+
 def _crop_rect(cx: float, cy: float, die_w: float, die_h: float,
                offset_x: float, offset_y: float,
                margin_x: float, margin_y: float) -> Tuple[int, int, int, int]:
@@ -310,11 +341,14 @@ def build_die_map(image: np.ndarray, corner_point: Tuple[float, float],
             left_f, right_f = x0 + ix * pitch_x, x0 + (ix + 1) * pitch_x
             top_f, bottom_f = y0 - (iy + 1) * pitch_y, y0 - iy * pitch_y
             center_x, center_y = (left_f + right_f) / 2.0, (top_f + bottom_f) / 2.0
-            if math.hypot(center_x - wcx, center_y - wcy) > center_limit_r:
+            # Keep true circle-crossing boxes even if their centers are outside.
+            if not _rect_intersects_circle(left_f, top_f, right_f, bottom_f,
+                                           wcx, wcy, center_limit_r):
                 continue
             clearance = _rect_circle_clearance(left_f, top_f, right_f, bottom_f,
                                                 wcx, wcy, center_limit_r)
-            if clip_partial_edge and clearance < 0.0:
+            if clip_partial_edge and _rect_crosses_circle(
+                    left_f, top_f, right_f, bottom_f, wcx, wcy, center_limit_r):
                 continue
             rect = (int(round(left_f)), int(round(top_f)), int(round(right_f)), int(round(bottom_f)))
             crop_rect = _crop_rect(center_x, center_y, pitch_x, pitch_y,
@@ -325,7 +359,8 @@ def build_die_map(image: np.ndarray, corner_point: Tuple[float, float],
                 "rect_px": rect,
                 "crop_rect_px": crop_rect,
                 "real_coord": ((center_x - wcx) / float(pixel_per_unit), (wcy - center_y) / float(pixel_per_unit)),
-                "is_edge_partial": bool(clearance < 0.0),
+                "is_edge_partial": _rect_crosses_circle(
+                    left_f, top_f, right_f, bottom_f, wcx, wcy, center_limit_r),
                 "is_edge_ring": False,
                 "edge_distance_px": round(clearance, 4),
                 "is_edge_margin": bool(0.0 <= clearance <= edge_index_margin_px),
@@ -401,7 +436,9 @@ def locate_die(die_map: WaferDieMap, point: Optional[Tuple[float, float]] = None
     entry = die_map.get_die(ix, iy)
     clearance = _rect_circle_clearance(left, top, right, bottom,
                                         die_map.wafer_cx, die_map.wafer_cy, die_map.edge_limit_r)
-    partial = bool(entry["is_edge_partial"]) if entry else bool(clearance < 0.0)
+    partial = (bool(entry["is_edge_partial"]) if entry else _rect_crosses_circle(
+        left, top, right, bottom, die_map.wafer_cx, die_map.wafer_cy,
+        die_map.edge_limit_r))
     ring = bool(entry["is_edge_ring"]) if entry else any(
         (ix + dx, iy + dy) not in die_map.dies_by_index
         for dx in (-1, 0, 1) for dy in (-1, 0, 1) if dx or dy)
