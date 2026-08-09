@@ -1,0 +1,90 @@
+{
+  "test_scope": "Gray_Wafer/111.png and Gray_Wafer/2222.png",
+  "parameters": {
+    "ring_inner_margin_px": 75,
+    "ring_outer_margin_px": 10,
+    "ring_guard_px": 2,
+    "die_exclusion_margin_px": 2,
+    "white_threshold": 220,
+    "min_area_px": 20,
+    "max_area_px": 300,
+    "max_aspect_ratio": 2.5,
+    "min_fill_ratio": 0.45,
+    "min_local_contrast": 45.0
+  },
+  "results": [
+    {
+      "image": "111.png",
+      "input_shape": [
+        1254,
+        1254
+      ],
+      "input_channels": 1,
+      "num_dies": 190,
+      "pitch_px": [
+        76.0,
+        67.0
+      ],
+      "inspection_pixels": 9841,
+      "mask_summary": {
+        "ring_pixels": 215196,
+        "die_excluded_pixels_in_ring": 205355,
+        "inspection_pixels": 9841,
+        "bright_pixels_inside_die": 636,
+        "bright_components_in_inspection": 39,
+        "accepted_particles": 0
+      },
+      "debug_component_counts": {
+        "die_excluded": 61,
+        "rejected": 39
+      },
+      "particle_count": 0,
+      "particles": [],
+      "overlay": "edge_particle_results\\111_edge_particles.png",
+      "diagnostic_overlay": "edge_particle_results\\111_edge_particle_diagnostic.png"
+    },
+    {
+      "image": "2222.png",
+      "input_shape": [
+        1254,
+        1254
+      ],
+      "input_channels": 1,
+      "num_dies": 190,
+      "pitch_px": [
+        76.0,
+        67.0
+      ],
+      "inspection_pixels": 4284,
+      "mask_summary": {
+        "ring_pixels": 216032,
+        "die_excluded_pixels_in_ring": 211748,
+        "inspection_pixels": 4284,
+        "bright_pixels_inside_die": 1506,
+        "bright_components_in_inspection": 35,
+        "accepted_particles": 0
+      },
+      "debug_component_counts": {
+        "die_excluded": 137,
+        "rejected": 35
+      },
+      "particle_count": 0,
+      "particles": [],
+      "overlay": "edge_particle_results\\2222_edge_particles.png",
+      "diagnostic_overlay": "edge_particle_results\\2222_edge_particle_diagnostic.png"
+    }
+  ],
+  "reference_particle_injection": {
+    "injected_center_px": [
+      536,
+      44
+    ],
+    "detected_count": 1,
+    "first_detected_center_px": [
+      536.23,
+      43.85
+    ],
+    "passed": true
+  },
+  "all_checks_passed": true
+}

@@ -12,6 +12,13 @@
 | 파일 | 설명 |
 |------|------|
 | `wafer_die_map_v5.py` | 메인 코드(단일 파일) |
+| `USE_LATEST/use_manual_grid_wafer_map.py` | 수동 float grid corner/pitch 입력 전용 단일 파일. wafer 중심만 이미지에서 검출한다. |
+| `USE_LATEST/use_gray_wafer_die_particle.py` | Gray wafer 및 wafer ring particle 검사 전용 단일 파일. |
+| `WEAK_GRAY_CROSS_GRID_KO.md` | 1채널 3000x3000 약신호용 십자 corner/pitch 검출 규칙과 파라미터 가이드 |
+| `TEST_3000_GRAY/` | TEST의 10000px 입력에서 만든 3000x3000 Gray 이미지와 cross grid 판정 overlay |
+| `MANUAL_GRID_WAFER_MAP_KO.md` | 수동 grid 입력 좌표 규칙 및 호출 가이드 |
+| `MANUAL_GRID_API_REFERENCE_KO.md` | 수동 grid 전용 함수, `dm`, Die entry, `locate_die` 전체 반환값 레퍼런스 |
+| `evaluate_manual_grid_wafer_map.py` | 수동 float grid 입력 회귀 검사 스크립트 |
 | `LOGIC_SPEC.html` | 로직 시각 설명서(브라우저로 열기) — 왜 이렇게 했나 |
 | `LOGIC_SPEC.md` | 로직 텍스트 설명서 |
 | `make_real_test_images.py` | Wikimedia Commons 실제 die/wafer 소스로 테스트 이미지 재생성 |
@@ -32,14 +39,17 @@
 ```python
 from wafer_die_map_v5 import build_die_map, locate_die
 
-# 기본 사용 (die_render 각도 정렬, edge_mode="circle")
+# 기본 사용 (die_render 각도 정렬, edge_mode="both")
 dm = build_die_map("wafer.jpg")
 
 # 각도 정렬 방식을 notch로 변경
 dm = build_die_map("wafer.jpg", angle_align_method="notch")
 
-# 두 가지 엣지 정의를 모두 사용
-dm = build_die_map("wafer.jpg", edge_mode="both")
+# 안전하게 부분 die를 줄이고, 남은 외곽 20px band의 index도 사용
+dm = build_die_map("wafer.jpg", edge_clip_margin_px=8,
+                   edge_index_margin_px=20, edge_mode="both")
+print(dm.edge_indices)
+print(dm.edge_index_report["margin"])
 
 # 정렬된 이미지 가져오기
 img = dm.aligned_image
@@ -52,6 +62,7 @@ print(r["real_coord"])      # 실좌표
 print(r["is_edge"])         # 엣지 여부 (edge_mode 기준)
 print(r["is_edge_partial"]) # 원 밖으로 삐져나온 부분 다이 여부
 print(r["is_edge_ring"])    # 최외곽 격자 링 다이 여부
+print(r["is_edge_margin"])  # 지정한 edge band 안의 완전 다이 여부
 ```
 
 ---
@@ -66,7 +77,9 @@ print(r["is_edge_ring"])    # 최외곽 격자 링 다이 여부
 |----------|--------|------|
 | `image` | — | 파일 경로(str) 또는 numpy 배열 |
 | `angle_align_method` | `"die_render"` | 각도 정렬 방식: `"die_render"` \| `"notch"` \| `"vertical_line"` \| `"none"` |
-| `edge_mode` | `"circle"` | 엣지 정의: `"circle"` \| `"ring"` \| `"both"` |
+| `edge_clip_margin_px` | `0` | 유효 wafer 원을 안쪽으로 줄이는 안전 여유(px). |
+| `edge_index_margin_px` | `0` | 포함된 완전 die 중 유효 edge에서 안쪽으로 이 폭만큼을 edge로 추가 분류한다. |
+| `edge_mode` | `"both"` | 엣지 정의: `"circle"` \| `"ring"` \| `"margin"` \| `"both"`. |
 
 **반환값 `WaferDieMap` 주요 속성:**
 
@@ -92,6 +105,8 @@ print(r["is_edge_ring"])    # 최외곽 격자 링 다이 여부
 | `is_edge` | 엣지 여부 (`edge_mode` 에 따라 다름) |
 | `is_edge_partial` | 웨이퍼 원 밖으로 걸친 다이 여부 |
 | `is_edge_ring` | 최외곽 링(8방향 이웃 중 빠진 것 있음) 여부 |
+| `is_edge_margin` | 지정한 유효 edge band 안의 완전 die 여부 |
+| `edge_distance_px` | 유효 edge 원에서 die의 가장 먼 모서리까지 남은 거리(px) |
 | `edge_mode` | 빌드 시 사용된 `edge_mode` 값 |
 
 ---

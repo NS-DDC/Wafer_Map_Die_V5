@@ -8,11 +8,11 @@
    그린 '이상적 격자 템플릿'에, 실제 sawline 엣지를 회전 정합시켜 기울기를 찾는다.
    실제 sawline 모양이 굵기 3 사각 테두리와 일치하므로, 모든 die·양축(가로/세로)을
    한꺼번에 이용해 가장 안정적으로 각도를 잡는다(2-pass: 대략검출→정합→재검출).
- · EDGE 구분 강화 : 각 die 에 두 가지 edge 플래그를 모두 부여(둘 다 선택 가능).
+ · EDGE 구분 강화 : 각 die 에 partial/ring/margin 세 edge 플래그를 부여(선택 가능).
      - is_edge_partial : die 사각형이 wafer 원 밖으로 일부라도 나간 '부분 die'.
      - is_edge_ring    : die 격자에서 8방향 이웃이 다 차 있지 않은 '최외곽 줄'.
    build_die_map(edge_mode="circle"|"ring"|"both") 로 is_edge 가 무엇을 가리킬지 선택.
-   locate_die 결과에 is_edge(+ is_edge_partial / is_edge_ring)가 함께 반환된다.
+   locate_die 결과에 is_edge와 partial/ring/margin 상세 플래그가 함께 반환된다.
 
 [기능] (기존 wafer_die_map.py 대비)
  1. Notch 중심점 반환 : wafer '아래쪽'의 파인 곳(notch)만 탐색하고, 그 파임의
@@ -91,14 +91,19 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import cv2
 import numpy as np
 
-__all__ = ["WaferDieMap", "build_die_map", "locate_die", "crop_die",
+__all__ = ["WaferDieMap", "build_die_map", "locate_die", "crop_die", "detect_wafer", "detect_grid",
+           "detect_thin_cross_grid",
            "detect_notch_angle", "detect_notch", "align_wafer_by_notch",
            "align_wafer_by_vertical_line", "clean_wafer",
            "measure_die_grid_angle", "measure_vertical_line_angle",
            "measure_horizontal_line_angle", "measure_axis_line_angle",
            "validate_quadrant_edges",
            "render_die_grid_mask", "measure_die_render_angle",
-           "align_wafer_by_die_render", "measure_wafer_angle_robust"]
+           "align_wafer_by_die_render", "measure_wafer_angle_robust",
+           "inspect_particles_in_wafer_ring", "render_particle_overlay",
+           "render_particle_diagnostic_overlay",
+           "inspect_edge_particles", "inspect_edge_particles_from_image",
+           "render_edge_particle_overlay", "render_edge_particle_diagnostic_overlay"]
 
 
 # #############################################################################
@@ -111,23 +116,83 @@ __all__ = ["WaferDieMap", "build_die_map", "locate_die", "crop_die",
 # =============================================================================
 # 1) Wafer 영역(원) 검출
 # =============================================================================
+def _as_bgr(image: np.ndarray) -> np.ndarray:
+    """Normalize direct Gray/BGR/BGRA input for public detection functions."""
+    if not isinstance(image, np.ndarray) or image.size == 0:
+        raise ValueError("image must be a non-empty numpy array")
+    if image.ndim == 2:
+        return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    if image.ndim != 3:
+        raise ValueError("image must have shape (H,W), (H,W,1), (H,W,3), or (H,W,4)")
+    if image.shape[2] == 1:
+        return cv2.cvtColor(image[:, :, 0], cv2.COLOR_GRAY2BGR)
+    if image.shape[2] == 3:
+        return image
+    if image.shape[2] == 4:
+        return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+    raise ValueError("image must have 1, 3, or 4 channels")
+
+
+def _gray_u8(image: np.ndarray) -> np.ndarray:
+    """Return a stable uint8 gray image for threshold and morphology operations."""
+    bgr = _as_bgr(image)
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    if gray.dtype == np.uint8:
+        return gray
+    return cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
+
 def detect_wafer(image_bgr: np.ndarray,
                  bg_threshold: int = 20) -> Tuple[int, int, int]:
-    """검정 배경을 제외한 가장 큰 contour 를 wafer 로 간주. -> (cx, cy, radius)."""
-    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    _, mask = cv2.threshold(gray, bg_threshold, 255, cv2.THRESH_BINARY)
+    """Detect wafer center/radius from Gray or color input, including weak signals.
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    Multiple low thresholds are evaluated because a fixed threshold of 20 can
+    split a weak 1-channel wafer into small islands. Candidates that look like
+    a large, near-circular object are preferred; a full-image noise component
+    is rejected instead of becoming a false wafer circle.
+    """
+    gray = _gray_u8(image_bgr)
+    height, width = gray.shape
+    blurred = cv2.GaussianBlur(gray, (0, 0), sigmaX=1.2)
+    otsu_level, _ = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    low_nonzero = float(np.percentile(blurred[blurred > 0], 8)) if np.any(blurred > 0) else 0.0
+    thresholds = sorted({
+        max(1, int(bg_threshold)),
+        max(1, int(round(otsu_level * 0.35))),
+        max(1, int(round(otsu_level * 0.65))),
+        max(1, int(round(low_nonzero))),
+    })
+    kernel_size = max(5, int(round(min(height, width) * 0.004)) | 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    image_center = (width / 2.0, height / 2.0)
+    best: Optional[Tuple[float, np.ndarray]] = None
 
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        raise RuntimeError("Wafer region not found "
-                           "(전부 배경이거나 bg_threshold 가 너무 높음).")
-    wafer_cnt = max(contours, key=cv2.contourArea)
+    for threshold in thresholds:
+        _, mask = cv2.threshold(blurred, threshold, 255, cv2.THRESH_BINARY)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            area = float(cv2.contourArea(contour))
+            if area < height * width * 0.02:
+                continue
+            (cx, cy), radius = cv2.minEnclosingCircle(contour)
+            # A component touching nearly the whole frame is background/noise, not a wafer.
+            if radius > min(height, width) * 0.60:
+                continue
+            perimeter = max(float(cv2.arcLength(contour, True)), 1.0)
+            circularity = min(1.0, 4.0 * math.pi * area / (perimeter * perimeter))
+            center_distance = math.hypot(cx - image_center[0], cy - image_center[1])
+            centered = max(0.0, 1.0 - center_distance / max(radius, 1.0))
+            coverage = min(1.0, area / (math.pi * radius * radius + 1e-6))
+            score = circularity * 0.55 + centered * 0.25 + coverage * 0.20
+            if best is None or score > best[0]:
+                best = (score, contour)
 
-    (cx, cy), radius = cv2.minEnclosingCircle(wafer_cnt)
+    if best is None:
+        raise RuntimeError(
+            "Wafer region not found. Check bg_threshold or confirm that the image has a dark background.")
+    (cx, cy), radius = cv2.minEnclosingCircle(best[1])
     return int(round(cx)), int(round(cy)), int(round(radius))
 
 
@@ -418,9 +483,21 @@ def _median_band_spacing(bands: List[Tuple[float, int, int, float]],
                          fallback_pitch: float,
                          min_pitch: int,
                          max_pitch: Optional[int]) -> float:
-    """검출된 street band 사이 간격의 median 으로 pitch 를 보정한다."""
+    """검출된 street band 사이 간격의 median 으로 pitch 를 보정한다.
+
+    ``max_pitch``는 권장값이 아니라 hard upper bound이다. band가 부족할 때도
+    fallback을 그대로 반환하지 않고 같은 상한을 적용해야, `max_pitch=70`인데
+    결과 pitch가 100 이상이 되는 문제가 생기지 않는다.
+    """
+    if max_pitch is not None and max_pitch < min_pitch:
+        raise ValueError("max_pitch must be greater than or equal to min_pitch")
+
+    def _bounded(value: float) -> float:
+        value = max(float(min_pitch), float(value))
+        return min(value, float(max_pitch)) if max_pitch is not None else value
+
     if len(bands) < 3:
-        return float(fallback_pitch)
+        return _bounded(fallback_pitch)
 
     centers = np.array(sorted(band[0] for band in bands), dtype=np.float64)
     diffs = np.diff(centers)
@@ -428,8 +505,296 @@ def _median_band_spacing(bands: List[Tuple[float, int, int, float]],
     lower = float(min_pitch)
     diffs = diffs[(diffs >= lower) & (diffs <= upper)]
     if diffs.size == 0:
-        return float(fallback_pitch)
-    return float(np.median(diffs))
+        return _bounded(fallback_pitch)
+    return _bounded(float(np.median(diffs)))
+
+
+def _choose_corner_x_origin(x_bands: List[Tuple[float, int, int, float]],
+                            wafer_cx: float, pitch_x: float,
+                            mode: str = "auto") -> Tuple[float, bool]:
+    """Choose x0 while avoiding a strong/broad vertical white-noise band.
+
+    A real GV street can be thinner and weaker than a vertical white-noise band.
+    In ``auto`` mode, when the nearest bright band is unusually wide or strong,
+    it is treated as a die-center-like noise band and the expected grid corner
+    is moved by half a pitch toward the wafer center.  ``nearest`` disables this
+    correction; ``half_pitch`` always applies it when a direction is available.
+    """
+    selected = _choose_nearest_band(x_bands, wafer_cx)
+    mode = str(mode).lower().strip()
+    if mode not in ("auto", "nearest", "half_pitch"):
+        raise ValueError("corner_x0_mode must be 'auto', 'nearest', or 'half_pitch'")
+    if mode == "nearest":
+        return float(selected[0]), False
+
+    widths = np.array([max(1.0, band[2] - band[1]) for band in x_bands], dtype=np.float64)
+    strengths = np.array([max(1e-6, band[3]) for band in x_bands], dtype=np.float64)
+    selected_width = max(1.0, selected[2] - selected[1])
+    median_width = float(np.median(widths))
+    median_strength = float(np.median(strengths))
+    noise_like = (selected_width >= max(5.0, median_width * 1.8, pitch_x * 0.14)
+                  or selected[3] >= max(1e-6, median_strength * 1.6))
+    should_shift = mode == "half_pitch" or (mode == "auto" and noise_like)
+    toward_center = float(wafer_cx - selected[0])
+    if not should_shift or abs(toward_center) < max(2.0, pitch_x * 0.08):
+        return float(selected[0]), False
+    return float(selected[0] + math.copysign(pitch_x * 0.5, toward_center)), True
+
+
+def _safe_autocorr_period(profile: np.ndarray, min_pitch: int,
+                          max_pitch: Optional[int], fallback: float) -> float:
+    """Autocorrelation fallback that never escapes the requested pitch range."""
+    try:
+        return float(_autocorr_period(profile, min_lag=min_pitch, max_lag=max_pitch))
+    except RuntimeError:
+        lower = float(min_pitch)
+        upper = float(max_pitch) if max_pitch is not None else max(lower, fallback)
+        return min(max(float(fallback), lower), upper)
+
+
+def _discard_subpitch_bands(bands: List[Tuple[float, int, int, float]],
+                            min_pitch: int) -> List[Tuple[float, int, int, float]]:
+    """Reject both edges of a broad noise stripe that are much closer than one pitch."""
+    ordered = sorted(bands, key=lambda band: band[0])
+    reject: set[int] = set()
+    close_limit = max(4.0, float(min_pitch) * 0.50)
+    for index in range(len(ordered) - 1):
+        if ordered[index + 1][0] - ordered[index][0] < close_limit:
+            reject.add(index)
+            reject.add(index + 1)
+    return [band for index, band in enumerate(ordered) if index not in reject]
+
+
+def _periodic_band_support(bands: List[Tuple[float, int, int, float]],
+                           position: float, pitch: float) -> float:
+    """Measure whether a candidate belongs to a repeating grid phase.
+
+    An isolated narrow vertical noise line can pass the width filter.  Unlike a
+    real street, it does not have similarly thin bands at ``position +/- n*pitch``.
+    The returned 0..1 support is therefore used as a second guard after width.
+    """
+    if len(bands) < 2 or pitch <= 0:
+        return 0.0
+    coords = [float(band[0]) for band in bands]
+    lower, upper = min(coords), max(coords)
+    tolerance = max(2.0, float(pitch) * 0.14)
+    matched = 0
+    expected = 0
+    step = 1
+    while position - step * pitch >= lower - tolerance:
+        expected += 1
+        if min(abs(coord - (position - step * pitch)) for coord in coords) <= tolerance:
+            matched += 1
+        step += 1
+    step = 1
+    while position + step * pitch <= upper + tolerance:
+        expected += 1
+        if min(abs(coord - (position + step * pitch)) for coord in coords) <= tolerance:
+            matched += 1
+        step += 1
+    return float(matched / expected) if expected else 0.0
+
+
+def _keep_periodic_candidates(bands: List[Tuple[float, int, int, float]],
+                              pitch: float) -> List[Tuple[float, int, int, float]]:
+    """Keep grid-phase candidates and reject isolated thin noise when possible."""
+    if len(bands) < 3:
+        return bands
+    scored = [(band, _periodic_band_support(bands, band[0], pitch)) for band in bands]
+    best = max(score for _, score in scored)
+    # Do not make a weak image fail solely because periodic support is poor;
+    # only remove candidates when another phase is clearly better.
+    if best < 0.35:
+        return bands
+    return [band for band, score in scored if score >= max(0.35, best * 0.70)]
+
+
+def _estimate_center_above_guide_y(horizontal_profile: np.ndarray,
+                                   ridge_profile: np.ndarray,
+                                   roi_y0: int, wafer_cy: float,
+                                   pitch_y: float) -> float:
+    """Estimate a weak horizontal guide when no reliable guide band survives.
+
+    Search only the expected area just above the wafer center.  Directional
+    horizontal support is preferred; the raw ridge projection contributes a
+    smaller fallback signal when a broken/weak guide cannot survive morphology.
+    """
+    horizontal = np.asarray(horizontal_profile, dtype=np.float64).reshape(-1)
+    ridge = np.asarray(ridge_profile, dtype=np.float64).reshape(-1)
+    if horizontal.size == 0 or ridge.size != horizontal.size:
+        return float(wafer_cy - max(1, int(round(pitch_y * 0.46))))
+
+    def normalize(values: np.ndarray) -> np.ndarray:
+        lo, hi = np.percentile(values, (10, 95))
+        if hi <= lo + 1e-9:
+            return np.zeros_like(values)
+        return np.clip((values - lo) / (hi - lo), 0.0, 1.0)
+
+    score = normalize(horizontal) + 0.35 * normalize(ridge)
+    score = np.asarray(_smooth_projection(score, 3), dtype=np.float64)
+    expected_offset = max(1, int(round(float(pitch_y) * 0.46)))
+    min_offset = max(2, int(round(float(pitch_y) * 0.12)))
+    start_y = int(round(wafer_cy - max(float(pitch_y) * 1.20, min_offset + 1)))
+    end_y = int(round(wafer_cy - min_offset))
+    start = max(0, start_y - int(roi_y0))
+    end = min(score.size, end_y - int(roi_y0) + 1)
+    if start >= end or float(score[start:end].max()) <= 1e-9:
+        return float(wafer_cy - expected_offset)
+    return float(int(roi_y0) + start + int(np.argmax(score[start:end])))
+
+
+def _select_cross_origin(x_bands: List[Tuple[float, int, int, float]],
+                         y_bands: List[Tuple[float, int, int, float]],
+                         wafer_cx: float, wafer_cy: float,
+                         pitch_x: float, pitch_y: float,
+                         origin_mode: str = "gv_boundary") -> Tuple[float, float]:
+    """Select central thin vertical/horizontal ridges and form their cross origin."""
+    mode = str(origin_mode).lower().strip()
+    if mode in ("center", "center_score", "center_scored", "score"):
+        mode = "center_scored"
+    elif mode in ("gv", "boundary", "gv_boundary", "nearest"):
+        mode = "gv_boundary"
+    else:
+        raise ValueError("cross_origin_mode must be 'gv_boundary' or 'center_scored'.")
+
+    if not y_bands or (not x_bands and mode != "center_scored"):
+        raise RuntimeError("No thin vertical/horizontal cross candidates were found near wafer center.")
+
+    # Grid origin must be a central cross. Restricting this first prevents a stronger
+    # but distant defect/noise intersection from winning only by projection strength.
+    near_x = [band for band in x_bands if abs(band[0] - wafer_cx) <= max(2.0, pitch_x * 1.15)]
+    near_y = [band for band in y_bands if abs(band[0] - wafer_cy) <= max(2.0, pitch_y * 1.15)]
+
+    periodic_x = _keep_periodic_candidates(x_bands, pitch_x)
+    periodic_y = _keep_periodic_candidates(y_bands, pitch_y)
+    candidate_x = [band for band in periodic_x if band in near_x] or periodic_x
+    candidate_y = [band for band in periodic_y if band in near_y] or periodic_y
+    # In this Gray wafer type the strong repeating vertical bands are die-center
+    # noise, not the weak GV boundary.  Select the nearest repeated noise lane
+    # only as a reference, then move half a pitch toward the wafer center to the
+    # boundary between lanes.  This avoids placing x0 on the bright gray stripe.
+    def gv_boundary_from_noise(noise_band: Tuple[float, int, int, float]) -> float:
+        direction_to_center = -1.0 if noise_band[0] >= wafer_cx else 1.0
+        return float(noise_band[0] + direction_to_center * pitch_x * 0.5)
+
+    if mode == "center_scored":
+        # This wafer type has a stable physical prior: the feature x coordinate
+        # is essentially the wafer center.  Do not move it half a pitch onto an
+        # inferred boundary when a bright vertical lane dominates the image.
+        # Vertical lanes are retained only for pitch_x measurement.
+        score_y = [band for band in periodic_y if abs(band[0] - wafer_cy) <= pitch_y * 2.2]
+        score_y = score_y or candidate_y
+        # The real Gray-wafer corner feature is consistently a little above the
+        # wafer center.  Prefer that physical side even when a noisy lower row
+        # lies one or two pixels closer; use lower rows only as a fallback.
+        upper_score_y = [band for band in score_y if band[0] <= wafer_cy]
+        score_y = upper_score_y or score_y
+        # x stays at the measured wafer center; score only the allowed upper
+        # horizontal rows by their distance from it.
+        selected_y = min(score_y, key=lambda band: abs(band[0] - wafer_cy))
+        return float(wafer_cx), float(selected_y[0])
+
+    selected_noise_x = min(candidate_x, key=lambda band: abs(band[0] - wafer_cx))
+    selected_x = gv_boundary_from_noise(selected_noise_x)
+
+    # The horizontal directional mask identifies actual cross rows.  Unlike the
+    # vertical die-center noise, y0 is the nearest horizontal row at/before the
+    # wafer center and needs no half-pitch conversion.
+    upper_y = [band for band in candidate_y if band[0] <= wafer_cy]
+    selected_y = max(upper_y, key=lambda band: band[0]) if upper_y else min(
+        candidate_y, key=lambda band: abs(band[0] - wafer_cy))
+    return selected_x, float(selected_y[0])
+
+
+def detect_thin_cross_grid(image: np.ndarray,
+                           wafer_cx: int, wafer_cy: int, wafer_r: int,
+                           roi_half: Optional[int] = None,
+                           min_pitch: int = 30,
+                           max_pitch: Optional[int] = 70,
+                           thin_width_max: int = 5,
+                           cross_origin_mode: str = "gv_boundary") -> Tuple[float, float, int, int]:
+    """Detect a weak Gray grid from narrow vertical/horizontal cross ridges.
+
+    A local high-pass image is opened separately in vertical and horizontal
+    directions. Physical 1-2 px lines become up to 5 px after local contrast
+    enhancement, so only bands up to ``thin_width_max`` are retained.  In the
+    supplied Gray wafer type the repeated vertical bright bands are die-center
+    noise: their period measures ``pitch_x``, while the weak GV boundary ``x0``
+    is inferred half a pitch toward the wafer center.  ``pitch_y`` and ``y0``
+    come from actual narrow horizontal cross rows.
+    """
+    # The weak-Gray cross mode is specialized for the requested 30-70px range.
+    # Other grid methods keep their historical unbounded default when requested.
+    if max_pitch is None:
+        max_pitch = 70
+    if max_pitch < min_pitch:
+        raise ValueError("max_pitch must be greater than or equal to min_pitch")
+    bgr = _as_bgr(image)
+    height, width = bgr.shape[:2]
+    if roi_half is None:
+        roi_half = min(700, max(180, int(wafer_r * 0.30)))
+    x0 = max(0, int(wafer_cx - roi_half))
+    x1 = min(width, int(wafer_cx + roi_half))
+    y0 = max(0, int(wafer_cy - roi_half))
+    y1 = min(height, int(wafer_cy + roi_half))
+    gray = _gray_u8(bgr[y0:y1, x0:x1])
+
+    # CLAHE keeps low-amplitude 1-2 px grid ridges visible without a global brightness assumption.
+    enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(32, 32)).apply(gray)
+    local_base = cv2.GaussianBlur(enhanced, (0, 0), sigmaX=1.25)
+    ridge = cv2.absdiff(enhanced, local_base)
+    otsu_level, _ = cv2.threshold(ridge, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    ridge_threshold = max(2, int(round(otsu_level)), int(round(np.percentile(ridge, 82))))
+    thin_mask = (ridge >= ridge_threshold).astype(np.uint8) * 255
+
+    # Weak 3000px wafer streets can be interrupted by die texture; require only
+    # a short directional run instead of half of the smallest expected pitch.
+    line_length = max(7, int(round(min_pitch * 0.30)))
+    vertical = cv2.morphologyEx(
+        thin_mask, cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (1, line_length)))
+    horizontal = cv2.morphologyEx(
+        thin_mask, cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (line_length, 1)))
+    x_profile = _smooth_projection(vertical.mean(axis=0), 3)
+    # Use directional horizontal runs for y positions as well.  The raw ridge
+    # projection also contains fine die texture (often 8-10px apart), which can
+    # falsely become a horizontal cross even though it is not a grid street.
+    y_profile = _smooth_projection(horizontal.mean(axis=1), 3)
+    x_bands = _find_projection_bands(x_profile, x0, 1, 0.10, 0.35, 0.1)
+    y_bands = _find_projection_bands(y_profile, y0, 1, 0.10, 0.35, 0.1)
+    x_bands = [band for band in x_bands if band[2] - band[1] <= thin_width_max]
+    # The 3px projection smoothing makes a physical 1-2px horizontal ridge appear up to 6px.
+    y_bands = [band for band in y_bands if band[2] - band[1] <= thin_width_max + 2]
+    if len(y_bands) < 2:
+        # Keep a weak-signal fallback, but only when no directional horizontal
+        # streets survived.  Normal cross detection must not use texture rows.
+        y_profile = _smooth_projection(ridge.mean(axis=1), 3)
+        y_bands = _find_projection_bands(y_profile, y0, 1, 0.10, 0.35, 0.1)
+        y_bands = [band for band in y_bands if band[2] - band[1] <= thin_width_max + 2]
+    x_bands = _discard_subpitch_bands(x_bands, min_pitch)
+    sx = np.abs(cv2.Sobel(cv2.GaussianBlur(gray, (0, 0), 1.2), cv2.CV_32F, 1, 0, ksize=3))
+    sy = np.abs(cv2.Sobel(cv2.GaussianBlur(gray, (0, 0), 1.2), cv2.CV_32F, 0, 1, ksize=3))
+    rough_x = _safe_autocorr_period(sx.mean(axis=0), min_pitch, max_pitch, (min_pitch + (max_pitch or min_pitch)) / 2.0)
+    rough_y = _safe_autocorr_period(sy.mean(axis=1), min_pitch, max_pitch, (min_pitch + (max_pitch or min_pitch)) / 2.0)
+    pitch_x = (_median_band_spacing(x_bands, rough_x, min_pitch, max_pitch)
+               if len(x_bands) >= 2 else float(rough_x))
+    pitch_y = (_median_band_spacing(y_bands, rough_y, min_pitch, max_pitch)
+               if len(y_bands) >= 2 else float(rough_y))
+    mode = str(cross_origin_mode).lower().strip()
+    if mode in ("center", "center_score", "center_scored", "score"):
+        near_y = [band for band in y_bands if abs(band[0] - wafer_cy) <= pitch_y * 1.15]
+        if len(y_bands) < 2 or not near_y:
+            guide_y = _estimate_center_above_guide_y(
+                horizontal.mean(axis=1), ridge.mean(axis=1), y0, wafer_cy, pitch_y)
+            y_bands = [(guide_y, int(round(guide_y)), int(round(guide_y)) + 1, 0.0)]
+    elif len(x_bands) < 2 or len(y_bands) < 2:
+        raise RuntimeError(
+            "Thin cross grid was not found. Check focus/contrast or increase thin_width_max only when real streets are wider.")
+    cross_x, cross_y = _select_cross_origin(
+        x_bands, y_bands, wafer_cx, wafer_cy, pitch_x, pitch_y,
+        origin_mode=cross_origin_mode)
+    return float(pitch_x), float(pitch_y), int(round(cross_x)), int(round(cross_y))
 
 
 def detect_corner_grid(image_bgr: np.ndarray,
@@ -446,7 +811,8 @@ def detect_corner_grid(image_bgr: np.ndarray,
                        min_width: int = 3,
                        threshold_ratio: float = 0.35,
                        sigma: float = 1.8,
-                       min_projection: float = 5.0
+                       min_projection: float = 5.0,
+                       corner_x0_mode: str = "auto"
                        ) -> Tuple[float, float, int, int]:
     """Noise wafer 의 실제 4-way 코너 교차점을 직접 찾는 Grid 검출.
 
@@ -502,21 +868,23 @@ def detect_corner_grid(image_bgr: np.ndarray,
     y_bands = _find_projection_bands(
         y_profile, y1, min_width, threshold_ratio, sigma, min_projection)
 
-    # x 축은 wafer 원 검출 중심이 1 px 정도 흔들릴 수 있어 가장 가까운 세로선을 선택한다.
-    # y 축은 중심 바로 위의 가로 street 가 grid origin 이므로 previous band 를 선택한다.
-    x_band = _choose_nearest_band(x_bands, float(wafer_cx))
-    y_band = _choose_previous_band(y_bands, float(wafer_cy))
     pitch_x = _median_band_spacing(x_bands, pitch_x_rough, min_pitch, max_pitch)
     pitch_y = _median_band_spacing(y_bands, pitch_y_rough, min_pitch, max_pitch)
-    return pitch_x, pitch_y, int(round(x_band[0])), int(round(y_band[0]))
+    # y 축은 중심 바로 위의 가로 street가 grid origin이다.
+    # x 축은 세로 흰 노이즈가 GV street보다 강한 경우가 있어 별도 보정한다.
+    x0, _ = _choose_corner_x_origin(x_bands, float(wafer_cx), pitch_x, corner_x0_mode)
+    y_band = _choose_previous_band(y_bands, float(wafer_cy))
+    return pitch_x, pitch_y, int(round(x0)), int(round(y_band[0]))
 
 
 def detect_grid(image_bgr: np.ndarray,
                 wafer_cx: int, wafer_cy: int, wafer_r: int,
-                method: str = "corner",
+                method: str = "cross",
                 roi_ratio: float = 0.6,
-                min_pitch: int = 50,
+                min_pitch: int = 30,
                 max_pitch: Optional[int] = None,
+                corner_x0_mode: str = "auto",
+                cross_origin_mode: str = "gv_boundary",
                 die_template_bgr: Optional[np.ndarray] = None,
                 line_hue: Optional[int] = None,
                 hue_delta: int = 20,
@@ -525,13 +893,20 @@ def detect_grid(image_bgr: np.ndarray,
                 ) -> Tuple[float, float, int, int]:
     """Die 격자 (pitch + origin) 자동 검출. -> (pitch_x, pitch_y, x0, y0).
 
-    method: "corner"(기본, street 선으로 코너 직접 검출) | "std" | "color" | "hybrid"
+    method: "cross"(기본, 1-2px 십자 ridge) | "corner" | "std" | "color" | "hybrid"
     """
+    image_bgr = _as_bgr(image_bgr)
+    if method in ("cross", "thin_cross", "weak_gray"):
+        return detect_thin_cross_grid(
+            image_bgr, wafer_cx, wafer_cy, wafer_r,
+            min_pitch=min_pitch, max_pitch=max_pitch,
+            cross_origin_mode=cross_origin_mode)
     # "corner" : 밝은 wafer street 선 자체를 mask 로 잡아 코너 교차점을 직접 검출.
     if method in ("corner", "corner_grid", "street"):
         return detect_corner_grid(
             image_bgr, wafer_cx, wafer_cy, wafer_r,
-            min_pitch=min_pitch, max_pitch=max_pitch)
+            min_pitch=min_pitch, max_pitch=max_pitch,
+            corner_x0_mode=corner_x0_mode)
 
     half = int(wafer_r * roi_ratio)
     x1 = max(wafer_cx - half, 0)
@@ -636,25 +1011,41 @@ def clip_die(image: np.ndarray, center_x: int, center_y: int,
 # #############################################################################
 
 # --- 사용자 조정 기본값 -----------------------------------------------------
-DEFAULT_GRID_METHOD = "corner"   # "corner"(권장, street 선으로 코너 직접 검출) | "hybrid" | "std" | "color"
-DEFAULT_PIXEL_PER_UNIT = 32      # 실측 좌표 환산 (px / unit)
-DEFAULT_EDGE_MARGIN = 1.0        # die 포함 기준: 중심거리 <= r * 이값.
-                                 #   1.0=원 안의 die 전부(EDGE 포함), 0.98=가장자리 제외
+#
+# 이 블록은 사용자가 이미지 종류에 맞춰 가장 먼저 조절해도 되는 값이다.
+# 함수 호출 때 같은 이름의 인자를 주면 여기의 기본값을 바꾸지 않고도 한 번만 시험할 수 있다.
+# 검증이 끝난 값만 이 기본값에 반영하는 것을 권장한다.
+#
+# [수정하지 않는 편이 좋은 값]
+# - build_die_map 내부의 float pitch 경계 계산: 정수 pitch를 반복 누적하면 wafer 중심에서
+#   멀어질수록 die 위치가 밀린다. 현재는 각 경계를 float 식으로 독립 계산한 뒤 한 번만 반올림한다.
+# - wafer ring particle 검사의 partial die 포함 mask: die 내부의 밝은 회로선을 particle로
+#   잘못 검출하지 않기 위한 장치이므로, 일반 die map의 edge clip과 분리해 유지해야 한다.
+#
+DEFAULT_GRID_METHOD = "cross"    # 약한 1채널 Gray: 1-2px 십자 ridge 기반. 필요 시 corner/std/color/hybrid 선택 가능.
+DEFAULT_PIXEL_PER_UNIT = 32      # 실측 좌표 환산 (px / unit). real_coord의 단위만 바뀌며 grid 검출에는 영향 없음.
+DEFAULT_EDGE_MARGIN = 1.0        # die 중심 포함 기준: 중심거리 <= wafer_r * 이 값.
+                                 # 작게 하면 가장자리 die가 더 일찍 빠진다. 1.0보다 크게 하면 wafer 밖 후보도 늘 수 있다.
+DEFAULT_CLIP_PARTIAL_EDGE = True # True면 사각형의 모서리 하나라도 safety circle 밖인 die를 결과 map에서 제외.
+                                 # False는 wafer ring particle 검사처럼 partial die까지 마스크해야 할 때만 사용한다.
 
 # --- EDGE die 판정 방식 (둘 다 계산되어 entry 에 저장; is_edge 가 무엇을 가리킬지 선택) ---
 #   "circle" : is_edge = is_edge_partial (die 사각형이 wafer 원 밖으로 일부라도 나감)
 #   "ring"   : is_edge = is_edge_ring    (die 격자에서 8방향 이웃이 다 차 있지 않은 최외곽)
 #   "both"   : is_edge = is_edge_partial OR is_edge_ring
-DEFAULT_EDGE_MODE = "circle"
+# clip_partial_edge=True이면 partial die는 결과 map에서 제거되므로 "circle"만 쓰면
+# is_edge가 0개가 될 수 있다. 기본 "both"는 남아 있는 최외곽 die(is_edge_ring)를
+# 항상 edge로 표시하면서, partial die를 남기는 설정에서는 circle edge도 함께 표시한다.
+DEFAULT_EDGE_MODE = "both"
 
 # crop 영역 보정/확장 (die 사이 street 포함, 미세 정렬 오차 보정용)
-DEFAULT_OFFSET_X = 0   # crop 중심 X 위치 보정 (px). +면 오른쪽, -면 왼쪽으로 이동
-DEFAULT_OFFSET_Y = 0   # crop 중심 Y 위치 보정 (px). +면 아래쪽, -면 위쪽으로 이동
-DEFAULT_MARGIN_X = 0   # 좌/우로 각각 더 포함할 영역 (px). die 폭이 +2*margin_x 만큼 커짐
-DEFAULT_MARGIN_Y = 0   # 상/하로 각각 더 포함할 영역 (px). die 높이가 +2*margin_y 만큼 커짐
+DEFAULT_OFFSET_X = 0   # crop 중심 X 위치 보정 (px). +면 오른쪽, -면 왼쪽으로 이동. map 좌표/인덱스는 바뀌지 않는다.
+DEFAULT_OFFSET_Y = 0   # crop 중심 Y 위치 보정 (px). +면 아래쪽, -면 위쪽으로 이동. map 좌표/인덱스는 바뀌지 않는다.
+DEFAULT_MARGIN_X = 0   # 좌/우로 각각 더 포함할 영역 (px). die 폭이 +2*margin_x 만큼 커짐. street 포함이 필요할 때만 증가.
+DEFAULT_MARGIN_Y = 0   # 상/하로 각각 더 포함할 영역 (px). die 높이가 +2*margin_y 만큼 커짐. 이웃 die까지 포함되지 않게 주의.
 
 # --- Notch 회전(angle) 보정 ---------------------------------------------------
-DEFAULT_NOTCH_ALIGN = True       # build_die_map 시작 시 notch 로 회전 보정 (notch 없으면 자동 skip)
+DEFAULT_NOTCH_ALIGN = False      # 약한 1채널 기본은 회전 검출 실패를 피하기 위해 보정 끔. 필요 시 True로 켠다.
 DEFAULT_NOTCH_REF_DEG = 90.0     # notch 의 정상 위치 (이미지 좌표 각도. 90 = 아래쪽/6시 방향)
 DEFAULT_NOTCH_MIN_ANGLE = 0.05   # 이보다 작은 오차(deg)는 보정 생략 (불필요한 워핑 방지)
 DEFAULT_NOTCH_MIN_DEPTH = 4.0    # notch 인정 절대 최소 파임 깊이 (px). 엣지 노이즈 하한
@@ -664,7 +1055,7 @@ DEFAULT_NOTCH_OPEN_KSIZE = 3     # ★ 림 컬러 노이즈 강인성: 경계를
                                  #   잡고, 이 크기 open 으로 얇은 노이즈 다리를 끊음(0=open끔)
 
 # --- Angle alignment method --------------------------------------------------
-DEFAULT_ANGLE_ALIGN_METHOD = "die_render"  # "die_render"(V5 기본) | "notch" | "vertical_line" | "none"
+DEFAULT_ANGLE_ALIGN_METHOD = "none"        # weak Gray 기본은 grid/center 검출 후 필요할 때만 보정을 켠다.
 
 # --- die_render 얼라인 (검출 die 를 굵기 3 사각형으로 렌더한 격자에 sawline 정합) ---
 DEFAULT_DIE_RENDER_THICKNESS = 3   # ★ dm.dies 를 cv2.rectangle 이 굵기로 렌더(=sawline 모양)
@@ -729,7 +1120,9 @@ class WaferDieMap:
       "real_coord":  (rx, ry),           # die 중심 기준 실측 좌표
       "is_edge_partial": bool,           # 정의① die 사각형이 wafer 원 밖으로 일부라도 나감
       "is_edge_ring":    bool,           # 정의② 격자에서 8방향 이웃이 다 차 있지 않은 최외곽
-      "is_edge":     bool,               # edge_mode 가 가리키는 값(circle→partial / ring→ring / both→OR)
+      "edge_distance_px": float,         # effective edge circle에서 die 바깥 모서리까지 남은 거리
+      "is_edge_margin": bool,            # 정의③ edge_index_margin_px 안쪽 band에 포함됨
+      "is_edge":     bool,               # edge_mode 가 가리키는 값(circle/ring/margin/both)
       "image":       np.ndarray,         # with_crops=True 일 때만 (crop_rect_px 영역)
     }
     """
@@ -756,7 +1149,10 @@ class WaferDieMap:
     die_grid_angle_resid: float = 0.0   # [기능2] 보정 후 die 격자 잔여 기울기(deg)
     angle_verified: bool = False        # [기능2] notch 각도와 die 격자 각도 일치 여부
     quadrant_report: Dict[str, Any] = field(default_factory=dict)  # [기능3] 4분면 검증 결과
-    edge_mode: str = DEFAULT_EDGE_MODE  # [V5] is_edge 가 가리키는 기준(circle|ring|both)
+    edge_mode: str = DEFAULT_EDGE_MODE  # [V5] is_edge 가 가리키는 기준(circle|ring|margin|both)
+    edge_clip_margin_px: int = 0        # map 포함 원을 실제 wafer 원에서 안쪽으로 줄인 안전 여유(px)
+    edge_index_margin_px: int = 0       # 포함된 die 중 edge로 추가 표기할 안쪽 band 폭(px)
+    edge_limit_r: float = 0.0           # 위 clip을 적용한 실제 die 포함/edge 판정 반지름(px)
     angle_confidence: float = 1.0  # [V5 고도화] 각도 신뢰도 0~1 (projection·FFT 합의 기반)
     angle_agree: bool = True        # [V5 고도화] projection 과 FFT 가 합의했는지
 
@@ -768,46 +1164,114 @@ class WaferDieMap:
     def num_dies(self) -> int:
         return len(self.dies)
 
+    @property
+    def edge_indices(self) -> List[Tuple[int, int]]:
+        """현재 edge_mode 기준의 edge die 격자 인덱스 `(ix, iy)` 목록."""
+        return [tuple(die["index"]) for die in self.dies if bool(die.get("is_edge"))]
 
-def _rect_crosses_circle(x1: int, y1: int, x2: int, y2: int,
-                         cx: int, cy: int, r: int) -> bool:
+    @property
+    def edge_index_report(self) -> Dict[str, List[Tuple[int, int]]]:
+        """partial/ring/margin/selected 기준별 edge die 인덱스 목록."""
+        return {
+            "selected": self.edge_indices,
+            "partial": [tuple(die["index"]) for die in self.dies if bool(die.get("is_edge_partial"))],
+            "ring": [tuple(die["index"]) for die in self.dies if bool(die.get("is_edge_ring"))],
+            "margin": [tuple(die["index"]) for die in self.dies if bool(die.get("is_edge_margin"))],
+        }
+
+
+def _rect_intersects_circle(x1: float, y1: float, x2: float, y2: float,
+                            cx: float, cy: float, r: float) -> bool:
+    """Return True when any portion of a die rectangle lies in the wafer disc."""
+    left, right = sorted((float(x1), float(x2)))
+    top, bottom = sorted((float(y1), float(y2)))
+    nearest_x = min(max(float(cx), left), right)
+    nearest_y = min(max(float(cy), top), bottom)
+    return (nearest_x - cx) ** 2 + (nearest_y - cy) ** 2 <= float(r) ** 2
+
+
+def _rect_crosses_circle(x1: float, y1: float, x2: float, y2: float,
+                         cx: float, cy: float, r: float) -> bool:
     """die rect 의 한 모서리라도 웨이퍼 원 밖이면 True (=정의①: 부분 die)."""
-    r2 = r * r
-    for (px, py) in ((x1, y1), (x2, y1), (x1, y2), (x2, y2)):
-        if (px - cx) ** 2 + (py - cy) ** 2 > r2:
-            return True
-    return False
+    left, right = sorted((float(x1), float(x2)))
+    top, bottom = sorted((float(y1), float(y2)))
+    farthest = max(math.hypot(px - cx, py - cy)
+                   for px, py in ((left, top), (right, top),
+                                  (left, bottom), (right, bottom)))
+    if left <= cx <= right and top <= cy <= bottom:
+        # The circle center lies in this box, so use the nearest box boundary.
+        nearest = min(cx - left, right - cx, cy - top, bottom - cy)
+    else:
+        nearest_x = min(max(cx, left), right)
+        nearest_y = min(max(cy, top), bottom)
+        nearest = math.hypot(nearest_x - cx, nearest_y - cy)
+    return nearest <= float(r) <= farthest
+
+
+def _rect_circle_clearance(x1: int, y1: int, x2: int, y2: int,
+                           cx: int, cy: int, r: float) -> float:
+    """Return distance from the farthest die corner to the effective edge circle.
+
+    Positive means the whole die is inside. Negative means at least one corner
+    crosses the circle. This is geometry only; it is unrelated to particle ROI.
+    """
+    farthest = max(math.hypot(px - cx, py - cy)
+                   for px, py in ((x1, y1), (x2, y1), (x1, y2), (x2, y2)))
+    return float(r - farthest)
 
 
 def _normalize_edge_mode(edge_mode: str) -> str:
-    """edge_mode 문자열 정규화 -> "circle" | "ring" | "both"."""
+    """edge_mode 문자열 정규화 -> "circle" | "ring" | "margin" | "both"."""
     m = str(edge_mode).lower().strip()
     if m in ("circle", "partial", "disc", "crop", "1"):
         return "circle"
     if m in ("ring", "neighbor", "outer", "outermost", "grid", "2"):
         return "ring"
+    if m in ("margin", "band", "distance", "3"):
+        return "margin"
     if m in ("both", "or", "all", "union"):
         return "both"
-    raise ValueError("edge_mode must be 'circle', 'ring', or 'both'.")
+    raise ValueError("edge_mode must be 'circle', 'ring', 'margin', or 'both'.")
 
 
-def _resolve_edge_flag(is_partial: bool, is_ring: bool, edge_mode: str) -> bool:
+def _resolve_edge_flag(is_partial: bool, is_ring: bool, is_margin: bool,
+                       edge_mode: str) -> bool:
     """edge_mode 에 따라 is_edge 가 가리킬 값 결정 (mode 는 정규화된 값)."""
     if edge_mode == "circle":
         return bool(is_partial)
     if edge_mode == "ring":
         return bool(is_ring)
-    return bool(is_partial or is_ring)   # "both"
+    if edge_mode == "margin":
+        return bool(is_margin)
+    return bool(is_partial or is_ring or is_margin)   # "both"
 
 
 def _load_bgr(image: Union[str, Path, np.ndarray]) -> np.ndarray:
-    """경로(str/Path) 또는 BGR ndarray 를 받아 BGR 이미지로 반환."""
+    """경로 또는 Gray/BGR/BGRA ndarray를 OpenCV BGR 3채널로 통일한다.
+
+    공개 함수는 1채널 Gray 배열을 직접 받는 것을 지원한다. OpenCV의 색상/그리기
+    함수는 상황에 따라 BGR 3채널을 요구하므로, 이 경계에서만 채널을 정규화한다.
+    이 처리를 우회하면 Gray 입력에서 ``cv_8uc3`` 오류가 다시 발생할 수 있다.
+    """
     if isinstance(image, np.ndarray):
-        return image
-    img = cv2.imread(str(image), cv2.IMREAD_COLOR)
-    if img is None:
+        if image.size == 0:
+            raise ValueError("image ndarray must not be empty")
+        if image.ndim == 2:
+            return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        if image.ndim != 3:
+            raise ValueError(f"image ndarray must have 2 or 3 dimensions, got {image.ndim}")
+        if image.shape[2] == 1:
+            return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        if image.shape[2] == 3:
+            return image
+        if image.shape[2] == 4:
+            return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+        raise ValueError(f"image ndarray must have 1, 3, or 4 channels, got {image.shape[2]}")
+
+    loaded = cv2.imread(str(image), cv2.IMREAD_UNCHANGED)
+    if loaded is None:
         raise FileNotFoundError(str(image))
-    return img
+    return _load_bgr(loaded)
 
 
 def _rotate_wafer_keep_size(image_bgr: np.ndarray,
@@ -1959,9 +2423,16 @@ def validate_quadrant_edges(dies: List[Dict[str, Any]],
 def build_die_map(image: Union[str, Path, np.ndarray],
                   *,
                   grid_method: str = DEFAULT_GRID_METHOD,
+                  min_pitch: int = 30,
+                  max_pitch: Optional[int] = None,
+                  corner_x0_mode: str = "auto",
+                  cross_origin_mode: str = "gv_boundary",
                   pixel_per_unit: int = DEFAULT_PIXEL_PER_UNIT,
                   include_edge: bool = True,
                   edge_margin: float = DEFAULT_EDGE_MARGIN,
+                  clip_partial_edge: bool = DEFAULT_CLIP_PARTIAL_EDGE,
+                  edge_clip_margin_px: int = -1,
+                  edge_index_margin_px: int = 0,
                   die_template_path: Optional[str] = None,
                   with_crops: bool = False,
                   border_mode: str = "pad",
@@ -1985,7 +2456,16 @@ def build_die_map(image: Union[str, Path, np.ndarray],
     Parameters
     ----------
     image            : wafer 이미지 경로(str/Path) 또는 BGR ndarray
-    grid_method      : 격자 검출 방식 "corner"(기본) | "hybrid" | "std" | "color"
+    grid_method      : 격자 검출 방식 "cross"(기본, 1-2px 십자) | "corner" | "hybrid" | "std" | "color"
+    min_pitch/max_pitch: 허용할 die pitch 범위(px). 기본 `cross` 방식은 max_pitch가
+                          None이어도 70px hard upper bound를 적용한다. 다른 방식은 None이면 상한 없음.
+    corner_x0_mode   : corner 방식의 x0 보정. "auto"(기본)는 강하고 넓은 세로 흰 노이즈를
+                       감지하면 wafer 중심 쪽으로 pitch_x/2 이동한다. "nearest"는 보정 끔,
+                       "half_pitch"는 항상 이동한다.
+    cross_origin_mode: cross 방식의 중심 corner 선택. "gv_boundary"(기본)는 중심에 가장 가까운
+                       반복 세로 노이즈 lane에서 GV 경계로 이동한다. "center_scored"는 GV 경계와
+                       x0을 wafer center x에 맞추고, 가로 cross 후보 중 중심에 가장 가까운 위쪽 y를
+                       선택한다. 이 Gray wafer의 특징에 따라 중심보다 위쪽 y 후보를 우선한다.
     pixel_per_unit   : 실측 좌표 환산 (px/unit)
     include_edge     : True 면 웨이퍼 원 안 die 전부 포함(가장자리 잘린 die 포함).
     edge_margin      : die 포함 기준 = (중심거리 <= r * edge_margin).
@@ -1993,11 +2473,14 @@ def build_die_map(image: Union[str, Path, np.ndarray],
     with_crops       : True 면 각 die entry 에 "image"(crop) 포함.
     border_mode      : with_crops 시 clip 방식 "pad" | "crop".
     offset_x/offset_y, margin_x/margin_y : crop 위치보정 / 영역확장 (px).
-    notch_align      : True(기본) 면 angle_align_method 로 회전(angle) 보정.
+    notch_align      : False(기본) 면 약한 1채널 신호를 그대로 사용. 회전 보정이 필요할 때만 True.
     notch_ref_deg    : notch 의 정상 위치 (90 = 아래쪽/6시 방향).
     angle_align_method: "die_render"(V5 기본) | "notch" | "vertical_line" | "none".
-    edge_mode        : ★ EDGE 판정 기준. "circle"(기본,부분 die) | "ring"(격자 최외곽) | "both".
-                       각 die 에는 is_edge_partial / is_edge_ring 가 모두 저장되고,
+    edge_clip_margin_px: map 포함 원을 줄이는 안전 여유(px). 키울수록 wafer 외곽 die를 더 제거.
+    edge_index_margin_px: 제거되지 않은 die 중 edge로 추가 표시할 안쪽 band 폭(px). clip과 별개.
+    edge_mode        : ★ EDGE 판정 기준. "circle"(부분 die) | "ring"(격자 최외곽) |
+                       "margin"(edge_index_margin_px band) | "both"(기본, 세 기준 OR).
+                       각 die 에는 is_edge_partial / is_edge_ring / is_edge_margin 가 모두 저장되고,
                        is_edge 는 edge_mode 가 가리키는 값이 된다.
     clean            : ★[기능4] True 면 시작 시 wafer 원판 밖을 검정으로(외부노이즈 제거).
     notch_sector_deg : ★[기능1] notch 를 아래쪽 ref±이 각도에서만 탐색.
@@ -2009,6 +2492,11 @@ def build_die_map(image: Union[str, Path, np.ndarray],
     WaferDieMap (V2 필드: notch_center_px, angle_verified, die_grid_angle_resid,
                  quadrant_report. aligned_image 는 항상 채워짐[기능5]. edge_mode 저장.)
     """
+    # 수정 순서 권장:
+    # 1) grid_method/min_pitch/max_pitch/notch_align로 pitch와 격자 위치를 먼저 맞춘다.
+    # 2) edge die만 문제면 edge_clip_margin_px를 조절한다.
+    # 3) crop만 어긋나면 grid를 건드리지 말고 offset_x/y, margin_x/y를 조절한다.
+    # pitch_x/y를 정수로 반올림해 다시 사용하면 누적 오차가 생기므로 아래 격자 식은 유지한다.
     img = _load_bgr(image)
 
     # 0a) ★[기능4] wafer 원판 밖을 검정으로 정리 (외부 노이즈 제거) — 가장 먼저
@@ -2071,41 +2559,71 @@ def build_die_map(image: Union[str, Path, np.ndarray],
             raise FileNotFoundError(str(die_template_path))
     pitch_x, pitch_y, x0, y0 = detect_grid(
         img, wafer_cx, wafer_cy, wafer_r,
-        method=grid_method, die_template_bgr=die_template_bgr)
+        method=grid_method,
+        min_pitch=min_pitch,
+        max_pitch=max_pitch,
+        corner_x0_mode=corner_x0_mode,
+        cross_origin_mode=cross_origin_mode,
+        die_template_bgr=die_template_bgr)
 
     die_w = int(round(pitch_x))
     die_h = int(round(pitch_y))
+    # edge clip은 pitch 크기에 비례해야 서로 다른 해상도에서도 비슷한 안전 폭을 유지한다.
+    # die_w/die_h는 crop용 정수 크기이며, 실제 격자 위치 계산은 아래 float pitch를 계속 사용한다.
+    if edge_clip_margin_px < 0:
+        edge_clip_margin_px = max(2, int(round(min(die_w, die_h) * 0.10)))
+    else:
+        edge_clip_margin_px = max(0, int(edge_clip_margin_px))
+    edge_index_margin_px = max(0, int(edge_index_margin_px))
 
     # 3) 전체 격자 위치 순회 (원본 inspect_wafer 와 동일한 중심/실측 공식)
     max_ix = int(np.ceil(wafer_r / pitch_x)) + 2
     max_iy = int(np.ceil(wafer_r / pitch_y)) + 2
     margin = edge_margin if include_edge else 0.98
-    r_lim_sq = (wafer_r * margin) ** 2
+    r_lim = max(0.0, wafer_r * margin - float(edge_clip_margin_px))
 
     dies: List[Dict[str, Any]] = []
     dies_by_index: Dict[Tuple[int, int], Dict[str, Any]] = {}
 
     for iy in range(-max_iy, max_iy + 1):
         for ix in range(-max_ix, max_ix + 1):
-            cx_d = int(round(x0 + ix * pitch_x + pitch_x / 2))
-            cy_d = int(round(y0 - iy * pitch_y - pitch_y / 2))
+            # 중요: ix * round(pitch_x)처럼 정수 pitch를 누적하지 않는다.
+            # 각 경계를 동일한 x0 + ix * float_pitch 식으로 독립 계산해야 멀리 있는 die도
+            # 중심에서 누적 이동하지 않는다. 경계의 중점은 die 내부 밝은 회로선과 무관한
+            # 기하학적 중심이므로 particle/회로 패턴이 있어도 중심점이 쉬프트되지 않는다.
+            x_a = int(round(x0 + ix * pitch_x))
+            x_b = int(round(x0 + (ix + 1) * pitch_x))
+            y_a = int(round(y0 - (iy + 1) * pitch_y))
+            y_b = int(round(y0 - iy * pitch_y))
+            if x_b <= x_a or y_b <= y_a:
+                continue
+            cx_d = int(round((x_a + x_b) / 2.0))
+            cy_d = int(round((y_a + y_b) / 2.0))
 
-            dx = cx_d - wafer_cx
-            dy = cy_d - wafer_cy
-            if dx * dx + dy * dy > r_lim_sq:     # 웨이퍼 원 밖 격자 위치 -> die 없음
+            # Do not discard a real edge die merely because its center falls
+            # outside the wafer circle.  The rectangle itself can still cross it.
+            if not _rect_intersects_circle(
+                    x_a, y_a, x_b, y_b, wafer_cx, wafer_cy, r_lim):
                 continue
 
-            x_a = cx_d - die_w // 2
-            y_a = cy_d - die_h // 2
-            x_b = x_a + die_w
-            y_b = y_a + die_h
+            # 중심만 원 안에 있어도 사각형 일부가 wafer 밖으로 나갈 수 있다.
+            # 제품 검사 map에서는 그런 partial die를 제거한다. 단, wafer ring particle 함수는
+            # partial die 내부도 제외해야 하므로 별도 private map에서 이 옵션을 False로 쓴다.
+            if clip_partial_edge and _rect_crosses_circle(
+                    x_a, y_a, x_b, y_b, wafer_cx, wafer_cy, r_lim):
+                continue
+
+            cell_w = x_b - x_a
+            cell_h = y_b - y_a
 
             # offset/margin 적용된 실제 crop 영역 (margin=offset=0 이면 rect_px 와 동일)
-            crop_rect = _crop_rect(cx_d, cy_d, die_w, die_h,
+            crop_rect = _crop_rect(cx_d, cy_d, cell_w, cell_h,
                                    offset_x, offset_y, margin_x, margin_y)
 
             rx = (cx_d - wafer_cx) / pixel_per_unit
             ry = (wafer_cy - cy_d) / pixel_per_unit
+            edge_distance_px = _rect_circle_clearance(
+                x_a, y_a, x_b, y_b, wafer_cx, wafer_cy, r_lim)
 
             entry: Dict[str, Any] = {
                 "index":       (ix, iy),
@@ -2113,15 +2631,17 @@ def build_die_map(image: Union[str, Path, np.ndarray],
                 "rect_px":     (x_a, y_a, x_b, y_b),
                 "crop_rect_px": crop_rect,
                 "real_coord":  (rx, ry),
-                # ★ 두 가지 edge 플래그를 모두 저장 (is_edge 는 아래서 edge_mode 로 결정)
-                "is_edge_partial": _rect_crosses_circle(x_a, y_a, x_b, y_b,
-                                                        wafer_cx, wafer_cy, wafer_r),
+                # 세 edge 기준을 모두 저장. is_edge는 아래서 edge_mode에 따라 선택한다.
+                "is_edge_partial": _rect_crosses_circle(
+                    x_a, y_a, x_b, y_b, wafer_cx, wafer_cy, r_lim),
                 "is_edge_ring": False,   # 8방향 이웃 확정 후 채움
+                "edge_distance_px": round(edge_distance_px, 2),
+                "is_edge_margin": bool(0.0 <= edge_distance_px <= edge_index_margin_px),
                 "is_edge":      False,   # edge_mode 적용 후 채움
             }
 
             if with_crops:
-                crop = crop_die(img, cx_d, cy_d, die_w, die_h,
+                crop = crop_die(img, cx_d, cy_d, cell_w, cell_h,
                                 offset_x=offset_x, offset_y=offset_y,
                                 margin_x=margin_x, margin_y=margin_y,
                                 border_mode=border_mode)
@@ -2141,7 +2661,8 @@ def build_die_map(image: Union[str, Path, np.ndarray],
                    for dxn in (-1, 0, 1) for dyn in (-1, 0, 1)
                    if not (dxn == 0 and dyn == 0))
         d["is_edge_ring"] = bool(ring)
-        d["is_edge"] = _resolve_edge_flag(d["is_edge_partial"], d["is_edge_ring"], emode)
+        d["is_edge"] = _resolve_edge_flag(
+            d["is_edge_partial"], d["is_edge_ring"], d["is_edge_margin"], emode)
 
     # 4) ★[기능3] 4분면 가장자리 맵 검증
     quadrant_report = validate_quadrant_edges(dies, wafer_cx, wafer_cy, wafer_r)
@@ -2159,6 +2680,9 @@ def build_die_map(image: Union[str, Path, np.ndarray],
         angle_confidence=angle_confidence,       # ★[V5 고도화] 각도 신뢰도(0~1)
         angle_agree=angle_agree,                 # ★[V5 고도화] projection↔FFT 합의 여부
         edge_mode=emode,                         # ★[V5] is_edge 기준
+        edge_clip_margin_px=edge_clip_margin_px,
+        edge_index_margin_px=edge_index_margin_px,
+        edge_limit_r=r_lim,
         quadrant_report=quadrant_report,         # ★[기능3]
     )
 
@@ -2201,7 +2725,9 @@ def locate_die(die_map: WaferDieMap,
           "is_edge"      : bool,               # edge_mode 가 가리키는 edge 여부
           "is_edge_partial": bool,             # 정의① die 가 wafer 원 밖으로 일부 나감
           "is_edge_ring" : bool,               # 정의② 격자 최외곽(8방향 이웃 결손)
-          "edge_mode"    : str,                # 이 맵의 is_edge 기준(circle|ring|both)
+          "edge_distance_px": float,           # effective edge circle에서 die 모서리까지 남은 거리
+          "is_edge_margin": bool,              # 지정한 edge band 포함 여부
+          "edge_mode"    : str,                # 이 맵의 is_edge 기준(circle|ring|margin|both)
           "in_wafer"     : bool,               # query 점이 웨이퍼 원 안인지
         }
 
@@ -2210,6 +2736,9 @@ def locate_die(die_map: WaferDieMap,
     - die_index 는 격자 공식으로 해석적으로 계산하므로, die_map 에 미포함된
       위치(웨이퍼 밖 등)도 인덱스/실측값을 반환합니다. 포함 여부는 in_wafer 로 판단.
     - crop_rect_px 로 실제 이미지에서 crop 하려면 crop_die() 또는 슬라이싱 사용.
+    - `die_rect_px`는 순수 die 경계이고, `crop_rect_px`만 offset/margin이 반영된
+      영역이다. die index가 어긋났다면 offset이 아니라 build_die_map의 grid 결과를
+      먼저 확인해야 한다.
     """
     if (point is None) == (bbox is None):
         raise ValueError("point 또는 bbox 중 정확히 하나를 지정하세요.")
@@ -2228,7 +2757,9 @@ def locate_die(die_map: WaferDieMap,
     x0 = die_map.x0
     y0 = die_map.y0
 
-    # --- 좌표 -> die index (build_die_map 의 중심 공식의 역변환, 규칙 동일) ---
+    # --- 좌표 -> die index (build_die_map 의 경계 식의 역변환, 규칙 동일) ---
+    # floor를 사용해야 경계선 좌표가 항상 한쪽 die로 일관되게 귀속된다.
+    # pitch는 float 상태를 그대로 사용한다. 여기서 int로 바꾸면 build와 locate 결과가 멀어질수록 달라진다.
     ix = int(math.floor((qx - x0) / px))
     iy = int(math.floor((y0 - qy) / py))         # iy +는 위쪽(y 감소)
 
@@ -2260,16 +2791,25 @@ def locate_die(die_map: WaferDieMap,
         is_edge_partial = bool(entry.get("is_edge_partial",
                                          entry.get("is_edge", False)))
         is_edge_ring = bool(entry.get("is_edge_ring", False))
+        is_edge_margin = bool(entry.get("is_edge_margin", False))
+        edge_distance_px = float(entry.get("edge_distance_px", 0.0))
     else:
         # 맵에 없는(웨이퍼 밖 등) 위치 -> 즉석 계산
-        is_edge_partial = _rect_crosses_circle(
+        # build_die_map()의 clip margin을 포함한 동일 원으로 판정한다.
+        edge_limit_r = float(getattr(die_map, "edge_limit_r", 0.0) or die_map.wafer_r)
+        edge_distance_px = _rect_circle_clearance(
             x_a, y_a, x_b, y_b,
-            die_map.wafer_cx, die_map.wafer_cy, die_map.wafer_r)
+            die_map.wafer_cx, die_map.wafer_cy, edge_limit_r)
+        is_edge_partial = _rect_crosses_circle(
+            x1, y1, x2, y2, die_map.wafer_cx, die_map.wafer_cy,
+            edge_limit_r)
+        edge_index_margin_px = int(getattr(die_map, "edge_index_margin_px", 0))
+        is_edge_margin = bool(0.0 <= edge_distance_px <= edge_index_margin_px)
         is_edge_ring = any(
             (ix + dxn, iy + dyn) not in die_map.dies_by_index
             for dxn in (-1, 0, 1) for dyn in (-1, 0, 1)
             if not (dxn == 0 and dyn == 0))
-    is_edge = _resolve_edge_flag(is_edge_partial, is_edge_ring, emode)
+    is_edge = _resolve_edge_flag(is_edge_partial, is_edge_ring, is_edge_margin, emode)
     in_wafer = ((qx - die_map.wafer_cx) ** 2 + (qy - die_map.wafer_cy) ** 2
                 <= die_map.wafer_r ** 2)
 
@@ -2288,6 +2828,8 @@ def locate_die(die_map: WaferDieMap,
         "is_edge":       is_edge,             # edge_mode 가 가리키는 값
         "is_edge_partial": is_edge_partial,   # 정의① 부분 die(원 밖으로 나감)
         "is_edge_ring":  is_edge_ring,        # 정의② 격자 최외곽(이웃 결손)
+        "edge_distance_px": round(edge_distance_px, 2),
+        "is_edge_margin": is_edge_margin,     # 정의③ 안전 원에서 안쪽 edge band
         "edge_mode":     emode,               # 이 맵의 is_edge 기준
         "in_wafer":      bool(in_wafer),
     }
@@ -2340,11 +2882,34 @@ def locate_die(die_map: WaferDieMap,
 #   dm = build_die_map(aligned, angle_align_method="none")  # 이미 정렬 -> 보정 OFF
 #
 #   # 5) ★ EDGE die 구분 — is_edge 기준 선택 (둘 다 entry 에 저장됨)
-#   dm = build_die_map("wafer.jpg", edge_mode="circle")  # 부분 die(원 밖) / 기본
-#   dm = build_die_map("wafer.jpg", edge_mode="ring")    # 격자 최외곽 줄
-#   dm = build_die_map("wafer.jpg", edge_mode="both")    # 둘 중 하나라도면 edge
+#   # clip_partial_edge=True이면 부분 die가 결과에서 제거되므로 `circle`만 쓰면 edge=0개가 정상이다.
+#   # 실제 검사에서 남아 있는 최외곽 die도 edge로 표시하려면 `ring` 또는 기본값 `both`를 사용한다.
+#   dm = build_die_map("wafer.jpg", edge_mode="circle", clip_partial_edge=False)  # 부분 die 자체를 남길 때만
+#   dm = build_die_map("wafer.jpg", edge_mode="ring")    # clip 뒤 남은 격자 최외곽 줄
+#   dm = build_die_map("wafer.jpg", edge_mode="both")    # 권장: partial 또는 최외곽 줄
 #   r = locate_die(dm, point=(5499, 4700))
 #   print(r["is_edge"], r["is_edge_partial"], r["is_edge_ring"], r["edge_mode"])
+#
+#   # 6) ★ wafer ring ROI 안의 particle 검사 순서
+#   # `is_edge`는 die의 위치 분류이고, 아래 particle은 defect 후보이다. 서로 다른 개념이다.
+#   # 6-1. 아래 dm은 모든 좌표와 회전 보정의 기준이다. Gray 1채널 image도 그대로 넣을 수 있다.
+#   dm = build_die_map(image, grid_method="std", notch_align=False,
+#                      edge_mode="both", clip_partial_edge=True)
+#   # 6-2. `inspection`에는 최종 particle, 후보/제외 mask, 진단용 D/R 목록이 함께 반환된다.
+#   inspection = inspect_particles_in_wafer_ring(
+#       dm,
+#       ring_inner_margin_px=75,  # wafer rim에서 안쪽으로 75px까지 검사할 ROI
+#       ring_outer_margin_px=10,  # rim 바로 근처 10px는 ROI에서 제외
+#       white_threshold=220,      # 밝은 후보 gray 하한(0~255)
+#       min_area_px=20, max_area_px=300,
+#       include_debug_components=True,
+#   )
+#   particles = inspection["particles"]  # 최종 통과 목록. 없으면 빈 list.
+#   # 6-3. 결과 이미지는 반드시 같은 dm을 넘긴다. dm.aligned_image 좌표계에 그려진다.
+#   overlay = render_particle_overlay(dm, inspection)             # 최종 P만 표시
+#   diagnostic = render_particle_diagnostic_overlay(dm, inspection) # D/R/P 전체 표시
+#   cv2.imwrite("edge_particle_overlay.png", overlay)
+#   cv2.imwrite("edge_particle_diagnostic.png", diagnostic)
 
 # =============================================================================
 # 반환값 정리  (각 함수가 돌려주는 값 레퍼런스)
@@ -2427,13 +2992,413 @@ def render_overlay_portable(image_path: Union[str, Path], die_map: WaferDieMap,
     return overlay_path
 
 
+def _make_die_exclusion_mask(dm: WaferDieMap, image_shape: Tuple[int, int],
+                             margin_px: int) -> np.ndarray:
+    """Create a mask for every theoretical die cell, including clipped edge cells.
+
+    `dm.dies` normally excludes partial edge die.  Particle inspection cannot
+    use that list directly because the bright contents of a clipped die would
+    become false particle candidates.  This helper recreates cells from the
+    same float grid stored in ``dm`` without re-detecting wafer/grid data.
+    """
+    height, width = image_shape
+    mask = np.zeros((height, width), dtype=np.uint8)
+    max_ix = int(np.ceil(dm.wafer_r / dm.pitch_x)) + 2
+    max_iy = int(np.ceil(dm.wafer_r / dm.pitch_y)) + 2
+    radius_sq = float(dm.wafer_r ** 2)
+
+    for iy in range(-max_iy, max_iy + 1):
+        for ix in range(-max_ix, max_ix + 1):
+            # Keep the same independent float-boundary calculation as build_die_map.
+            x1 = int(round(dm.x0 + ix * dm.pitch_x))
+            x2 = int(round(dm.x0 + (ix + 1) * dm.pitch_x))
+            y1 = int(round(dm.y0 - (iy + 1) * dm.pitch_y))
+            y2 = int(round(dm.y0 - iy * dm.pitch_y))
+            if x2 <= x1 or y2 <= y1:
+                continue
+            cx = (x1 + x2) / 2.0
+            cy = (y1 + y2) / 2.0
+            if (cx - dm.wafer_cx) ** 2 + (cy - dm.wafer_cy) ** 2 > radius_sq:
+                continue
+            cv2.rectangle(
+                mask,
+                (max(0, x1 - margin_px), max(0, y1 - margin_px)),
+                (min(width - 1, x2 + margin_px), min(height - 1, y2 + margin_px)),
+                255,
+                -1,
+            )
+    return mask
+
+
+def inspect_particles_in_wafer_ring(dm: WaferDieMap, *,
+                           ring_inner_margin_px: int = 75,
+                           ring_outer_margin_px: int = 10,
+                           ring_guard_px: int = 2,
+                           die_exclusion_margin_px: int = 2,
+                           white_threshold: int = 220,
+                           min_area_px: int = 20,
+                           max_area_px: int = 300,
+                           max_aspect_ratio: float = 2.5,
+                           min_fill_ratio: float = 0.45,
+                           min_local_contrast: float = 45.0,
+                           include_debug_components: bool = False
+                           ) -> Dict[str, Any]:
+    """조절 가능한 wafer 외곽 ring ROI에서 particle defect 후보를 찾는다.
+
+    **중요한 구분:** `is_edge`는 wafer 외곽에 있는 *die*의 속성이다. 이 함수가
+    찾는 `particles`는 ring ROI 안의 defect 후보일 뿐, particle 자체에 edge라는
+    속성은 부여하지 않는다. ring은 particle 검사 범위를 제한하는 기하학적 ROI다.
+
+    수정 우선순위는 `edge_inner/outer_margin_px` -> `white_threshold` -> 면적 범위
+    -> 형상/대비 필터 순서가 좋다. threshold만 낮춰서 검출 수를 맞추면 die/street
+    노이즈가 함께 증가할 수 있으므로, 반드시 diagnostic overlay의 D/R/P 표기로
+    원인을 먼저 확인한다.
+
+    `dm = build_die_map(image, ...)`의 반환값을 넣는다. 검사 기준 이미지는
+    `dm.aligned_image`이며, 회전 보정 뒤의 die/grid 좌표와 같은 좌표계가 유지된다.
+
+    partial edge die까지 포함한 모든 die cell을 threshold 이전에 mask한다. 따라서
+    die 내부의 밝은 회로 패턴과 wafer edge에 걸친 die는 particle 후보가 될 수 없다.
+
+    Returns
+    -------
+    dict
+        ``particles``에는 최종 통과 particle 목록이 들어간다. 각 항목은 ``id``,
+        ``center_px`` (sub-pixel 중심), ``bbox_px`` (x1, y1, x2, y2), ``area_px``,
+        ``aspect_ratio``, ``fill_ratio``, ``mean_intensity``, ``local_contrast``,
+        ``radius_from_wafer_center_px``를 가진다. mask 항목은 모두 원본과 같은
+        `(H, W)` 크기의 uint8 배열이며 1=해당 조건 참, 0=거짓이다.
+
+        - ``ring_mask``: 설정한 wafer 외곽 ring
+        - ``die_exclusion_mask``: particle 검사에서 제외할 전체 die 영역
+        - ``inspection_mask``: 실제 후보 검사가 허용된 픽셀
+        - ``bright_mask``: threshold를 통과한 검사 후보 픽셀
+        - ``die_bright_mask``: die 내부여서 제외된 밝은 픽셀
+        - ``mask_summary``: 위 mask의 pixel 수와 최종 개수 요약
+        - ``debug_components``: 옵션을 켰을 때 D(die 내부 제외), R(필터 탈락) 목록
+    """
+    if ring_inner_margin_px <= ring_outer_margin_px:
+        raise ValueError("ring_inner_margin_px must be larger than ring_outer_margin_px")
+    if ring_guard_px < 0 or die_exclusion_margin_px < 0:
+        raise ValueError("ring_guard_px and die_exclusion_margin_px must be >= 0")
+    if min_area_px <= 0 or max_area_px < min_area_px:
+        raise ValueError("area limits must satisfy 0 < min_area_px <= max_area_px")
+    if not 0.0 < max_aspect_ratio:
+        raise ValueError("max_aspect_ratio must be > 0")
+
+    if not isinstance(dm, WaferDieMap):
+        raise TypeError("inspect_particles_in_wafer_ring(dm, ...) requires a WaferDieMap from build_die_map()")
+    if dm.aligned_image is None:
+        raise ValueError("dm.aligned_image is required; create dm with build_die_map()")
+
+    bgr = _load_bgr(dm.aligned_image)
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+
+    height, width = gray.shape
+    yy, xx = np.ogrid[:height, :width]
+    radius = np.hypot(xx - dm.wafer_cx, yy - dm.wafer_cy)
+    # margin은 wafer 원의 바깥쪽에서 안쪽으로 잰 거리다.
+    # inner margin을 키우면 더 안쪽까지 검사하고, outer margin을 줄이면 rim에 더 가깝게 검사한다.
+    # guard는 경계에 반쯤 걸친 blob을 불안정하게 분류하지 않도록 양 끝을 추가로 비운다.
+    inner_radius = float(dm.wafer_r - ring_inner_margin_px + ring_guard_px)
+    outer_radius = float(dm.wafer_r - ring_outer_margin_px - ring_guard_px)
+    if inner_radius <= 0 or outer_radius <= inner_radius:
+        raise ValueError("edge ring parameters leave no inspection area")
+    ring_mask = ((radius >= inner_radius) & (radius <= outer_radius)).astype(np.uint8)
+
+    # This uses dm's grid directly, but includes theoretical partial edge cells.
+    # Do not replace with `for die in dm.dies`: normal maps deliberately clip them.
+    die_mask = _make_die_exclusion_mask(dm, (height, width), die_exclusion_margin_px)
+
+    # 최종 검사 가능 픽셀 = 외곽 ring AND 어떤 die에도 속하지 않는 픽셀.
+    # die mask를 threshold보다 먼저 적용하는 순서가 die 내부 흰 패턴 오검출 방지의 핵심이다.
+    inspection_mask = ((ring_mask > 0) & (die_mask == 0)).astype(np.uint8)
+    bright_mask = ((gray >= int(white_threshold)) & (inspection_mask > 0)).astype(np.uint8)
+    die_bright_mask = ((gray >= int(white_threshold)) & (ring_mask > 0) & (die_mask > 0)).astype(np.uint8)
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bright_mask, 8)
+
+    particles: List[Dict[str, Any]] = []
+    rejected_components: List[Dict[str, Any]] = []
+
+    def _record(label: int, reason: str, *, local_contrast: Optional[float] = None) -> Dict[str, Any]:
+        x, y, box_w, box_h, area = (int(value) for value in stats[label])
+        cx, cy = (float(value) for value in centroids[label])
+        record: Dict[str, Any] = {
+            "center_px": (round(cx, 2), round(cy, 2)),  # blob 중심 (x, y, px)
+            "bbox_px": (x, y, x + box_w, y + box_h),    # 좌상/우하 bounding box (px)
+            "area_px": area,                             # 연결 성분 실제 면적 (pixel 수)
+            "reason": reason,                            # "area" | "shape" | "background" | "contrast"
+        }
+        if local_contrast is not None:
+            record["local_contrast"] = round(local_contrast, 2)
+        return record
+
+    for label in range(1, num_labels):
+        x, y, box_w, box_h, area = (int(value) for value in stats[label])
+        # 1차: 매우 작은 점 노이즈/큰 얼룩을 면적으로 제거한다.
+        # particle 크기가 바뀌면 min/max_area_px를 먼저 조절한다.
+        if not min_area_px <= area <= max_area_px:
+            if include_debug_components:
+                rejected_components.append(_record(label, "area"))
+            continue
+        aspect_ratio = max(box_w, box_h) / max(1.0, min(box_w, box_h))
+        fill_ratio = area / float(max(1, box_w * box_h))
+        # 2차: 긴 street 조각(aspect 큼)과 빈 테두리/선(fill 작음)을 제거한다.
+        # 실제 particle이 길쭉하다면 max_aspect_ratio를 조금 올리되 R 표시를 확인한다.
+        if aspect_ratio > max_aspect_ratio or fill_ratio < min_fill_ratio:
+            if include_debug_components:
+                rejected_components.append(_record(label, "shape"))
+            continue
+
+        component_mask = labels[y:y + box_h, x:x + box_w] == label
+        mean_intensity = float(gray[y:y + box_h, x:x + box_w][component_mask].mean())
+        pad = 3
+        rx1, ry1 = max(0, x - pad), max(0, y - pad)
+        rx2, ry2 = min(width, x + box_w + pad), min(height, y + box_h + pad)
+        local_component = labels[ry1:ry2, rx1:rx2] == label
+        local_background = inspection_mask[ry1:ry2, rx1:rx2].astype(bool) & ~local_component
+        if int(local_background.sum()) < 8:
+            if include_debug_components:
+                rejected_components.append(_record(label, "background"))
+            continue
+        local_contrast = mean_intensity - float(np.median(gray[ry1:ry2, rx1:rx2][local_background]))
+        # 3차: 평균 밝기가 높아도 주변보다 충분히 밝지 않으면 background texture로 간주한다.
+        # threshold는 통과하지만 R(contrast)로 빠지는 후보가 많을 때만 이 값을 낮춘다.
+        if local_contrast < min_local_contrast:
+            if include_debug_components:
+                rejected_components.append(_record(label, "contrast", local_contrast=local_contrast))
+            continue
+
+        cx, cy = (float(value) for value in centroids[label])
+        particles.append({
+            "id": len(particles) + 1,  # 최종 통과 순번. overlay의 P 번호와 동일한 순서.
+            "center_px": (round(cx, 2), round(cy, 2)),  # particle 무게중심 (x, y, px)
+            "bbox_px": (x, y, x + box_w, y + box_h),    # particle 사각 영역 (x1, y1, x2, y2, px)
+            "area_px": area,                             # particle에 속한 밝은 pixel 개수
+            "aspect_ratio": round(aspect_ratio, 3),      # 긴 변 / 짧은 변. 1에 가까울수록 원형/정사각형.
+            "fill_ratio": round(fill_ratio, 3),          # area / bbox 면적. 낮으면 가는 선/빈 테두리 가능성.
+            "mean_intensity": round(mean_intensity, 2),  # component 내부 평균 gray 값 (0~255)
+            "local_contrast": round(local_contrast, 2),  # component 평균 - 주변 검사 영역 median gray
+            "radius_from_wafer_center_px": round(float(np.hypot(cx - dm.wafer_cx, cy - dm.wafer_cy)), 2),
+                                                        # wafer 중심에서 particle 중심까지 거리 (px)
+        })
+
+    die_bright_components: List[Dict[str, Any]] = []
+    if include_debug_components:
+        die_count, _, die_stats, die_centroids = cv2.connectedComponentsWithStats(die_bright_mask, 8)
+        for label in range(1, die_count):
+            x, y, box_w, box_h, area = (int(value) for value in die_stats[label])
+            if area < 3:
+                continue
+            cx, cy = (float(value) for value in die_centroids[label])
+            die_bright_components.append({
+                "center_px": (round(cx, 2), round(cy, 2)),  # die 내부 밝은 blob 중심 (px)
+                "bbox_px": (x, y, x + box_w, y + box_h),    # die 내부 blob bbox (px)
+                "area_px": area,                             # die 내부 밝은 pixel 수
+                "reason": "die_excluded",                   # D 표시: particle 검사가 아닌 die 내부 패턴
+            })
+
+    return {
+        "die_map": dm,                         # 입력받은 WaferDieMap. 모든 결과 좌표의 기준.
+        "particles": particles,                 # 모든 필터를 통과한 particle dict 목록.
+        "ring_mask": ring_mask,                 # uint8 (H,W): wafer 외곽 ring=1, 나머지=0.
+        "die_exclusion_mask": die_mask,         # uint8 (H,W): partial die를 포함해 검사 금지인 die=1.
+        "inspection_mask": inspection_mask,     # uint8 (H,W): ring 중 die 밖의 실제 검사 허용 영역=1.
+        "bright_mask": bright_mask,             # uint8 (H,W): 검사 허용 영역에서 threshold 이상인 후보=1.
+        "die_bright_mask": die_bright_mask,     # uint8 (H,W): die 내부여서 제외된 밝은 pixel=1.
+        "mask_summary": {
+            "ring_pixels": int(ring_mask.sum()),
+            "die_excluded_pixels_in_ring": int(((ring_mask > 0) & (die_mask > 0)).sum()),
+                                                        # ring 안이지만 die 내부라 검사에서 빠진 pixel 수.
+            "inspection_pixels": int(inspection_mask.sum()),  # 실제 검사 가능 pixel 수.
+            "bright_pixels_inside_die": int(die_bright_mask.sum()),
+                                                        # particle가 아니라고 제외한 die 내부 밝은 pixel 수.
+            "bright_components_in_inspection": int(num_labels - 1),
+                                                        # 필터 적용 전 threshold 후보 blob 개수.
+            "accepted_particles": len(particles),     # 면적/형상/배경/대비까지 통과한 최종 개수.
+        },
+        "parameters": {  # 이번 결과에 실제 적용한 입력 파라미터. 재현/로그 저장용.
+            "ring_inner_margin_px": ring_inner_margin_px,
+            "ring_outer_margin_px": ring_outer_margin_px,
+            "ring_guard_px": ring_guard_px,
+            "die_exclusion_margin_px": die_exclusion_margin_px,
+            "white_threshold": white_threshold,
+            "min_area_px": min_area_px,
+            "max_area_px": max_area_px,
+            "max_aspect_ratio": max_aspect_ratio,
+            "min_fill_ratio": min_fill_ratio,
+            "min_local_contrast": min_local_contrast,
+        },
+        "inspection_radii_px": {
+            "inner": round(inner_radius, 2),  # wafer 중심 기준 ring 안쪽 반지름 (px)
+            "outer": round(outer_radius, 2),  # wafer 중심 기준 ring 바깥쪽 반지름 (px)
+        },
+        "debug_components": {
+            "die_excluded": die_bright_components,  # D: die 내부라 무조건 제외된 밝은 blob 목록.
+            "rejected": rejected_components,         # R: 검사 영역 안이지만 각 reason에서 탈락한 blob 목록.
+        } if include_debug_components else None,
+    }
+
+
+def inspect_edge_particles(dm: WaferDieMap, *,
+                           edge_inner_margin_px: int = 75,
+                           edge_outer_margin_px: int = 10,
+                           **particle_parameters: Any) -> Dict[str, Any]:
+    """호환용 이전 이름. 새 코드에서는 `inspect_particles_in_wafer_ring()`을 사용한다.
+
+    `edge_*`는 particle의 속성이 아니라 wafer ring ROI의 옛 파라미터명이다.
+    particle 결과에는 `is_edge`가 없으며, die의 edge 여부는 `dm.dies[*]["is_edge"]`로
+    별도로 확인한다.
+    """
+    return inspect_particles_in_wafer_ring(
+        dm,
+        ring_inner_margin_px=edge_inner_margin_px,
+        ring_outer_margin_px=edge_outer_margin_px,
+        **particle_parameters,
+    )
+
+
+def inspect_edge_particles_from_image(image: Union[str, Path, np.ndarray], *,
+                                      grid_method: str = "std",
+                                      notch_align: bool = False,
+                                      **particle_parameters: Any) -> Dict[str, Any]:
+    """이미지에서 바로 시작해야 할 때 쓰는 보조 함수.
+
+    주 사용 방식은 ``dm = build_die_map(image); inspect_particles_in_wafer_ring(dm)``이다.
+    기존처럼 이미지 한 장만 가진 상황에서는 이 함수를 사용한다. 함수명에
+    ``from_image``을 넣어 dm 기반 API와 혼동하지 않도록 구분했다. 반환값의 키와
+    의미는 ``inspect_particles_in_wafer_ring(dm, ...)``와 완전히 같다.
+    """
+    dm = build_die_map(
+        image,
+        grid_method=grid_method,
+        notch_align=notch_align,
+        edge_mode="both",
+    )
+    return inspect_particles_in_wafer_ring(dm, **particle_parameters)
+
+
+def render_particle_overlay(dm: WaferDieMap,
+                            inspection: Dict[str, Any]) -> np.ndarray:
+    """`dm` 좌표계에서 wafer ring ROI와 최종 particle을 그린다.
+
+    Returns
+    -------
+    np.ndarray
+        `dm.aligned_image`와 같은 `(H, W, 3)` BGR uint8 이미지. 하늘색 원은 검사
+        ring 경계, 빨간 box/cross와 숫자는 최종 통과 particle이다. 파일 저장은 호출부에서
+        ``cv2.imwrite(path, overlay)``로 수행한다.
+    """
+    if dm.aligned_image is None:
+        raise ValueError("dm.aligned_image is required; create dm with build_die_map()")
+    canvas = _load_bgr(dm.aligned_image).copy()
+    die_map = dm
+    inner_radius = int(round(inspection["inspection_radii_px"]["inner"]))
+    outer_radius = int(round(inspection["inspection_radii_px"]["outer"]))
+    cv2.circle(canvas, (die_map.wafer_cx, die_map.wafer_cy), inner_radius, (255, 190, 0), 1)
+    cv2.circle(canvas, (die_map.wafer_cx, die_map.wafer_cy), outer_radius, (255, 190, 0), 1)
+    for particle in inspection["particles"]:
+        x1, y1, x2, y2 = particle["bbox_px"]
+        center = tuple(int(round(value)) for value in particle["center_px"])
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), (0, 0, 255), 1)
+        cv2.drawMarker(canvas, center, (0, 0, 255), cv2.MARKER_CROSS, 10, 1)
+        cv2.putText(canvas, str(particle["id"]), (x1, max(12, y1 - 3)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 1, cv2.LINE_AA)
+    return canvas
+
+
+def render_particle_diagnostic_overlay(dm: WaferDieMap,
+                                       inspection: Dict[str, Any],
+                                       max_debug_components: int = 12) -> np.ndarray:
+    """`dm` 좌표계에 wafer ring 검사/제외/탈락/통과 영역을 상세하게 그린다.
+
+    Returns
+    -------
+    np.ndarray
+        `dm.aligned_image`와 같은 `(H, W, 3)` BGR uint8 이미지. 주황은 die 제외,
+        초록은 실제 검사 영역, D는 die 내부 밝은 blob, R은 필터 탈락, P는 최종 particle이다.
+    """
+    if dm.aligned_image is None:
+        raise ValueError("dm.aligned_image is required; create dm with build_die_map()")
+    canvas = _load_bgr(dm.aligned_image).copy()
+    ring = inspection["ring_mask"].astype(bool)
+    die_in_ring = ring & inspection["die_exclusion_mask"].astype(bool)
+    inspectable = inspection["inspection_mask"].astype(bool)
+
+    tint = canvas.copy()
+    tint[ring] = (255, 150, 0)          # cyan: outer ring
+    canvas = cv2.addWeighted(canvas, 0.78, tint, 0.22, 0)
+    tint = canvas.copy()
+    tint[die_in_ring] = (0, 120, 255)   # orange: die interior exclusion
+    canvas = cv2.addWeighted(canvas, 0.68, tint, 0.32, 0)
+    tint = canvas.copy()
+    tint[inspectable] = (90, 220, 90)   # green: pixels allowed to inspect
+    canvas = cv2.addWeighted(canvas, 0.84, tint, 0.16, 0)
+
+    die_map = dm
+    inner_radius = int(round(inspection["inspection_radii_px"]["inner"]))
+    outer_radius = int(round(inspection["inspection_radii_px"]["outer"]))
+    cv2.circle(canvas, (die_map.wafer_cx, die_map.wafer_cy), inner_radius, (255, 220, 0), 1)
+    cv2.circle(canvas, (die_map.wafer_cx, die_map.wafer_cy), outer_radius, (255, 220, 0), 1)
+
+    debug = inspection.get("debug_components") or {"die_excluded": [], "rejected": []}
+    groups = (
+        ("D", debug["die_excluded"], (255, 90, 0), "die excluded"),
+        ("R", debug["rejected"], (0, 220, 255), "shape/area rejected"),
+        ("P", inspection["particles"], (0, 0, 255), "accepted particle"),
+    )
+    for prefix, components, color, _ in groups:
+        ranked = sorted(components, key=lambda item: int(item["area_px"]), reverse=True)[:max_debug_components]
+        for index, component in enumerate(ranked, start=1):
+            x1, y1, x2, y2 = component["bbox_px"]
+            center = tuple(int(round(value)) for value in component["center_px"])
+            cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 1)
+            cv2.drawMarker(canvas, center, color, cv2.MARKER_CROSS, 8, 1)
+            cv2.putText(canvas, f"{prefix}{index}", (x1, max(12, y1 - 3)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1, cv2.LINE_AA)
+
+    summary = inspection["mask_summary"]
+    legend = [
+        f"ring={summary['ring_pixels']} px",
+        f"die excluded={summary['die_excluded_pixels_in_ring']} px",
+        f"inspectable={summary['inspection_pixels']} px",
+        f"D=die white {len(debug['die_excluded'])}",
+        f"R=rejected {len(debug['rejected'])}",
+        f"P=accepted {len(inspection['particles'])}",
+    ]
+    cv2.rectangle(canvas, (14, 14), (355, 158), (7, 17, 30), -1)
+    for row, value in enumerate(legend):
+        cv2.putText(canvas, value, (25, 37 + row * 21), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.48, (240, 245, 250), 1, cv2.LINE_AA)
+    return canvas
+
+
+def render_edge_particle_overlay(dm: WaferDieMap,
+                                 inspection: Dict[str, Any]) -> np.ndarray:
+    """호환용 이전 이름. 새 코드에서는 `render_particle_overlay()`를 사용한다."""
+    return render_particle_overlay(dm, inspection)
+
+
+def render_edge_particle_diagnostic_overlay(dm: WaferDieMap,
+                                            inspection: Dict[str, Any],
+                                            max_debug_components: int = 12) -> np.ndarray:
+    """호환용 이전 이름. 새 코드에서는 `render_particle_diagnostic_overlay()`를 사용한다."""
+    return render_particle_diagnostic_overlay(dm, inspection, max_debug_components)
+
+
 def evaluate_bw_noisy_wafer(image_path: Union[str, Path],
                             overlay_path: Optional[Union[str, Path]] = None,
                             *,
                             grid_method: str = "std",
                             angle_align_method: str = "die_render",
                             clean: bool = True) -> Dict[str, Any]:
-    """Standalone helper that runs build_die_map and returns a JSON-ready summary."""
+    """Standalone helper that runs build_die_map and returns a JSON-ready summary.
+
+    반환 dict의 ``num_dies``는 포함된 die 수, ``pitch_x/y``는 float pitch(px),
+    ``rotation_deg``는 적용한 보정각(deg), ``angle_confidence``와 ``angle_agree``는
+    각도 신뢰도/교차검증 결과, ``wafer_center``와 ``wafer_r``는 wafer geometry(px),
+    ``overlay``는 저장한 BGR overlay 파일 경로다.
+    """
     image_path = Path(image_path)
     if not image_path.exists():
         raise FileNotFoundError(str(image_path))
@@ -2451,16 +3416,16 @@ def evaluate_bw_noisy_wafer(image_path: Union[str, Path],
     render_overlay_portable(image_path, die_map, overlay_path)
 
     return {
-        "image": image_path.name,
-        "num_dies": die_map.num_dies,
-        "pitch_x": round(die_map.pitch_x, 3),
-        "pitch_y": round(die_map.pitch_y, 3),
-        "rotation_deg": round(die_map.rotation_deg, 4),
-        "angle_confidence": round(die_map.angle_confidence, 3),
-        "angle_agree": bool(die_map.angle_agree),
-        "wafer_center": [die_map.wafer_cx, die_map.wafer_cy],
-        "wafer_r": die_map.wafer_r,
-        "overlay": str(overlay_path),
+        "image": image_path.name,                         # 입력 파일명.
+        "num_dies": die_map.num_dies,                      # 최종 die map에 포함된 die 수.
+        "pitch_x": round(die_map.pitch_x, 3),              # 가로 die pitch (px, float).
+        "pitch_y": round(die_map.pitch_y, 3),              # 세로 die pitch (px, float).
+        "rotation_deg": round(die_map.rotation_deg, 4),    # 적용한 회전 보정 각도 (deg).
+        "angle_confidence": round(die_map.angle_confidence, 3),  # projection/FFT 기반 각도 신뢰도 0~1.
+        "angle_agree": bool(die_map.angle_agree),          # 두 각도 측정이 합의했는지.
+        "wafer_center": [die_map.wafer_cx, die_map.wafer_cy],  # wafer 중심 (x, y, px).
+        "wafer_r": die_map.wafer_r,                         # wafer 반지름 (px).
+        "overlay": str(overlay_path),                       # 저장된 die overlay PNG 경로.
     }
 
 

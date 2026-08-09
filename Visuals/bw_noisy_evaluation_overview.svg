@@ -4,7 +4,7 @@
     BW Noisy Wafer Evaluation Overview
   </text>
   <text x="80" y="132" fill="#94a3b8" font-size="24" font-family="Segoe UI, Arial, sans-serif">
-    Target file: paste_ready_evaluate_bw_noisy_wafer.py
+    Target file: use_gray_wafer_die_particle.py
   </text>
 
   <rect x="80" y="190" width="300" height="180" rx="24" fill="#1e293b"/>
